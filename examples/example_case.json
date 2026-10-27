@@ -1,0 +1,20 @@
+{
+  "cover": {
+    "trust_name": "[Trust name]",
+    "title": "Business case: robot-assisted surgery programme",
+    "prepared_by": "[Name, role]",
+    "sro": "[Name, role]",
+    "clinical_lead": "[Name, role]",
+    "finance_lead": "[Name, role]",
+    "version": "Draft 0.1",
+    "status": "Draft: assumptions awaiting specialty review"
+  },
+  "configuration": {
+    "preset": "medium_dgh_1",
+    "robots": 1,
+    "platform": "platform_b",
+    "evidence": "central",
+    "instrument_price": "standard_discount",
+    "central_capital_per_robot": 1000000
+  }
+}
