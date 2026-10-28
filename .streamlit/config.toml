@@ -1,0 +1,33 @@
+# Institutional theme for the Robotic Programme Decision Tool (v0.6).
+# Fonts are Streamlit's bundled Source Sans and Source Serif; ./static holds the favicon.
+
+[server]
+enableStaticServing = true
+
+[client]
+toolbarMode = "minimal"        # hides the Deploy button and developer options
+showErrorDetails = "none"
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#1F3864"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F3F5F8"
+textColor = "#1B1F24"
+linkColor = "#1F3864"
+borderColor = "#D5DAE1"
+showWidgetBorder = true
+baseRadius = "small"
+# Streamlit's bundled faces: "sans-serif" is Source Sans and "serif" is Source Serif.
+# (v0.6.0 used [[theme.fontFaces]] with locally served files; in Chromium those
+# rules never registered and every element fell back to Times New Roman.)
+font = "sans-serif"
+headingFont = "serif"
+headingFontWeights = [600, 600, 600, 600, 600, 600]
+baseFontSize = 15
+
+[theme.sidebar]
+backgroundColor = "#F3F5F8"
