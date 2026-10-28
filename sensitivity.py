@@ -2,7 +2,7 @@
 One-way sensitivity analysis (tornado).
 
 Each assumption is moved, on its own, to a low and a high value while every other
-input stays at the base case and the list plan is held fixed. The change in the
+input stays at the base case and the theatre template (or list plan) is held fixed. The change in the
 chosen result is recorded. Ranges are placeholders for expert review unless a
 source is given; they are listed in every output.
 
@@ -19,6 +19,7 @@ METRICS = {
     "cost_per_bed_day": ("Extra cost per bed-day released", "£"),
     "cost_per_open": ("Extra cost per open operation avoided", "£"),
     "npc": ("Net present cost to the NHS (economic view)", "£"),
+    "net_cash": ("Five-year cash cost to the trust after tariff income", "£"),
 }
 
 
@@ -32,6 +33,8 @@ def metric_value(r, metric):
         return t["cost_per_open_operation_avoided"]
     if metric == "npc":
         return r["economic"]["net_present_cost"]
+    if metric == "net_cash":
+        return t["net_cash_cost"]
     raise ValueError(metric)
 
 
@@ -109,6 +112,9 @@ def parameters(cfg):
                                    0.5 if l == "low" else 1.5))
     add("Cost per theatre minute", "£8", "£20",
         lambda c, l: c["unit_costs"].__setitem__("theatre_minute", 8 if l == "low" else 20))
+    if cfg.get("template") is not None:
+        add("Share of templated cases that go ahead", "85%", "100%",
+            lambda c, l: c["programme"].__setitem__("realisation_factor", 0.85 if l == "low" else 1.0))
     add("Steady-state utilisation", "80%", "100%",
         lambda c, l: c["programme"].__setitem__(
             "utilisation_by_year",
@@ -144,7 +150,8 @@ def tornado(cfg, metric="extra_cost", base_result=None):
         vals = {}
         for level in ("low", "high"):
             c = copy.deepcopy(cfg)
-            c["manual_plan"] = dict(base["plan"])
+            if base.get("input_mode") == "demand":
+                c["manual_plan"] = dict(base["plan"])
             p["fn"](c, level)
             E.validate(c)
             vals[level] = metric_value(E.run(c), metric)

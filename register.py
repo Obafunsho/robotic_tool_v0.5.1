@@ -8,10 +8,14 @@ Status values
   Placeholder  : no adequate source yet; must be replaced or confirmed locally
   Assumption   : a modelling choice made by the project team
   Trust input  : entered by the trust; to be evidenced locally
+  Flagged for review : a value known to need clinical review before use
 Nothing in the register is marked as reviewed: specialty review is pending.
 """
 import defaults as D
 import engine as E
+import templates as T
+
+GYN_MAJOR = {"hysterectomy", "endometriosis", "myomectomy"}
 
 REVIEW = "Awaiting specialty review"
 
@@ -40,10 +44,12 @@ def rows(cfg):
 
     # Clinical assumptions by specialty --------------------------------------
     for k, g in cfg["groups"].items():
-        if not g["volume"]:
+        if not g["volume"] or k in D.NOT_MODELLED:
             continue
         owner = f"[{g['specialty']} clinical benefit owner]"
-        add(f"{g['label']}: robotic cases per year", f"{g['volume']:,.0f}", "Trust activity data",
+        add(f"{g['label']}: annual demand (robotic cases)", f"{g['volume']:,.0f}",
+            "Trust activity data (preset values are placeholders)" + (
+                "; preset re-split to the gynaecology major mix in v0.6" if k in GYN_MAJOR else ""),
             "Local", "Trust input", owner)
         if E.is_multi_comparator(g):
             mix = ", ".join(f"{D.COMPARATOR_SHORT[c].lower()} {v:.0%}" for c, v in g["comparators"].items())
@@ -58,10 +64,53 @@ def rows(cfg):
         add(f"{g['label']}: share that would be open without the robot", f"{g['p_open']:.0%}", src,
             "Indirect (population rates, not the robotic subgroup)" if status == "Context only" else "None",
             status, owner)
+        if k == "abdominal_wall":
+            add("Abdominal wall reconstruction: 30-day assumptions", "See Appendix A",
+                "Set for ventral and incisional hernia repair, not reconstruction", "None", "Flagged for review", owner)
         eff_src = {"colorectal": f"{SRC['surg_endosc_2024']}; {SRC['plos_2015']}"}.get(k, "Expert estimate")
         add(f"{g['label']}: 30-day differences (bed-days, events, theatre time)", "See Appendix A", eff_src,
             "Observational, international" if k == "colorectal" else "None", 
             "Partly sourced" if k == "colorectal" else "Placeholder", owner)
+
+    # Theatre template -------------------------------------------------------
+    lead = "[Clinical lead]"
+    if cfg.get("template") is not None:
+        add("Two-week theatre template", {"standard": "Standard day, pre-filled from demand",
+                                          "extended": "Extended day, pre-filled from demand"}.get(
+            cfg.get("template_variant"), "Entered by the trust"),
+            "Trust theatre plan", "Local", "Trust input", "[Theatres lead]")
+    gyn = cfg["list_map"].get("gynaecology", {}).get("major") if "list_map" in cfg else None
+    if gyn:
+        add("Gynaecology major cases: split by procedure", T.describe_split(cfg, gyn),
+            "Clinical lead's estimate (40% hysterectomy, 50% endometriosis, 10% myomectomy), being confirmed",
+            "Expert opinion", "Assumption", lead)
+    if "list_map" in cfg:
+        add("Major, medium and minor tiers: which procedure each counts as", "See Appendix A",
+            "Clinical lead's mapping (v0.6); medium tier for prostate, kidney and bladder lists",
+            "Expert opinion", "Assumption", lead)
+    add("Maximum cases per session", str(cfg["programme"].get("max_cases_per_session", 3)),
+        "Clinical lead's default; adjustable", "Expert opinion", "Assumption", lead)
+    add("Share of templated cases that go ahead", f"{cfg['programme'].get('realisation_factor', 1.0):.0%}",
+        "None found (cancellations and under-runs)", "None", "Placeholder", "[Theatres lead]")
+    add("Cases that map to no modelled procedure", "Costed, no 30-day benefit",
+        "Project team decision (conservative)", "n/a", "Assumption", "[Project team]")
+
+    # Tariff -----------------------------------------------------------------
+    for k, g in cfg["groups"].items():
+        if k in D.NOT_MODELLED or not (g["volume"] or g.get("tariff_uplift")):
+            continue
+        val = g.get("tariff_uplift", 0.0)
+        if k in D.TARIFF_SOURCES:
+            add(f"{g['label']}: extra tariff income per case", f"£{val:,.0f}", D.TARIFF_SOURCES[k],
+                "Policy (NHS Payment Scheme)", "Placeholder" if val == 0 else "Trust input", "[Finance lead]")
+    add("Extra tariff income, all other procedures", "£0", D.DEFAULT_TARIFF_SOURCE + " Not checked per HRG.",
+        "None", "Placeholder", "[Finance lead]")
+    add("Tariff: patients would otherwise be treated at this trust", "Assumed",
+        "If they would otherwise go to another provider, the trust gains the whole tariff and that provider "
+        "loses it: a transfer, not a gain to the NHS", "n/a", "Assumption", "[Finance lead]")
+    add("Tariff: payment mechanism and market forces factor", "Not modelled",
+        "Elective income may be paid under aligned payment and incentive (fixed plus variable) rather than full "
+        "unit prices; the market forces factor is not applied", "n/a", "Placeholder", "[Finance lead]")
 
     # Unit costs ---------------------------------------------------------------
     fin = "[Finance lead]"
@@ -103,8 +152,8 @@ def rows(cfg):
     add("Surgical first assistant or care practitioner", f"{pr.get('sfa_wte_per_robot', 0):g} WTE per robot at "
         f"£{pr.get('sfa_cost_per_wte', 0):,.0f}", SRC["girft"] + " (provision should be built into the business case); cost is a placeholder",
         "Guidance / none (cost)", "Partly sourced", "[Theatres lead]")
-    add("Maximum robotic cases per robot per year", f"{pr.get('max_cases_per_robot', 700):,}",
-        "Project team decision (hard cap)", "n/a", "Assumption", "[Project team]")
+    add("Robotic cases per robot per year: advisory level", f"{pr.get('max_cases_per_robot', 700):,}",
+        "Project team decision (amber guardrail above this level, not a cut)", "n/a", "Assumption", "[Project team]")
     add("Minimum list fill before a list is created", f"{pr.get('min_list_fill', 0.75):.0%}",
         "Project team decision (matches the utilisation guardrail)", "n/a", "Assumption", "[Project team]")
     add("Benchmark programme volume", f"{D.BENCHMARK['cases_per_robot']} cases per robot per year",
@@ -117,3 +166,7 @@ def rows(cfg):
 def summary(cfg):
     from collections import Counter
     return dict(Counter(r["status"] for r in rows(cfg)))
+
+
+STATUSES = ("Sourced", "Partly sourced", "Context only", "Placeholder", "Assumption", "Trust input",
+            "Flagged for review")

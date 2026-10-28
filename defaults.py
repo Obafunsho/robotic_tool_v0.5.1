@@ -18,7 +18,7 @@ Anti-double-counting rule:
   except readmission, which is a separate spell and is costed in full.
 """
 
-ENGINE_VERSION = "0.5.1"
+ENGINE_VERSION = "0.6.1"
 
 # ---------------------------------------------------------------------------
 # Procedure groups
@@ -35,13 +35,18 @@ ENGINE_VERSION = "0.5.1"
 #                              (colorectal 2 cases per all-day list; set 3 to test
 #                              a high-throughput list, which needs the cases to fill it)
 # nhse_priority              : NHSE-signalled specialty (allocation priority)
+# tariff_uplift              : extra income per robotic case over what the trust would
+#                              earn for the same patient without the robot (cash case only)
+# Demand placeholders are the v0.5 values. (v0.6.0 re-split gynaecology demand to the
+# 40/50/10 session mix; v0.6.1 reverted this: the mix describes cases within a
+# gynaecology major session, not the trust's demand.)
 # ---------------------------------------------------------------------------
 def _g(label, specialty, cases_medium, cases_large, p_open, cases_per_list,
        list_sessions, nhse_priority, rationale, **b):
     return dict(label=label, specialty=specialty, cases_medium=cases_medium,
                 cases_large=cases_large, p_open=p_open, cases_per_list=cases_per_list,
                 list_sessions=list_sessions, nhse_priority=nhse_priority,
-                p_open_rationale=rationale, p_robot_elsewhere=0.0, **b)
+                p_open_rationale=rationale, p_robot_elsewhere=0.0, tariff_uplift=0.0, **b)
 
 
 PROCEDURE_GROUPS = {
@@ -118,7 +123,7 @@ PROCEDURE_GROUPS = {
         readm_reduction_open=0.0, readm_reduction_lap=0.0,
         extra_minutes_open=10, extra_minutes_lap=15),
     "abdominal_wall": _g(
-        "Abdominal wall (ventral and incisional hernia)", "General surgery", 80, 120,
+        "Abdominal wall reconstruction", "General surgery", 80, 120,
         0.70, 2, 1, True,
         "Most ventral and incisional repairs are open without a robot.",
         los_reduction_open=1.5, los_reduction_lap=0.2, conv_reduction_lap=0.02,
@@ -144,6 +149,13 @@ PROCEDURE_GROUPS = {
         comp_reduction_open=0.05, comp_reduction_lap=0.0,
         readm_reduction_open=0.01, readm_reduction_lap=0.0,
         extra_minutes_open=30, extra_minutes_lap=0),
+    "not_modelled": _g(
+        "Other robotic cases (not modelled)", "Other", 0, 0,
+        0.0, 1, 1, False,
+        "Cases on the template that map to no modelled procedure: costs only, no 30-day benefit.",
+        los_reduction_open=0.0, los_reduction_lap=0.0, conv_reduction_lap=0.0,
+        reop_reduction_open=0.0, reop_reduction_lap=0.0, comp_reduction_open=0.0, comp_reduction_lap=0.0,
+        readm_reduction_open=0.0, readm_reduction_lap=0.0, extra_minutes_open=0, extra_minutes_lap=0),
     "upper_gi": _g(
         "Upper GI (anti-reflux and hiatal hernia)", "Upper GI", 20, 40,
         0.05, 2, 1, False,
@@ -174,8 +186,9 @@ EVIDENCE_NOTES = {
                       "NHS practice. Effect sizes versus open are placeholders."),
     "hysterectomy": ("Open share placeholder. In England, about half of hysterectomies were laparoscopic by 2011-17 "
                      "(Madhvani et al, cited in Clark and Saridogan 2021). Effect sizes are placeholders."),
-    "abdominal_wall": ("Open share placeholder. Open repair remains the commonest approach to hernia repair in UK "
-                       "national data (World J Emerg Surg 2025). Effect sizes are placeholders."),
+    "abdominal_wall": ("Flagged for review: the 30-day assumptions were set for ventral and incisional hernia repair, "
+                       "not abdominal wall reconstruction. Open share placeholder; open repair remains the commonest "
+                       "approach to hernia repair in UK national data (World J Emerg Surg 2025)."),
     "bed_day": ("Excess ward bed-day placeholder (single-trust FOI, 2023/24: £379 including ward costs and overheads, "
                 "rounded up). The national average elective inpatient cost per bed-day was £1,198 in 2024/25, but this "
                 "includes treatment costs and overstates the value of a day saved at the end of a stay. Bed-days are "
@@ -291,6 +304,9 @@ PROGRAMME = dict(
     target_net_cost_per_bed_day=1500,  # placeholder target used for the instrument price calculation
     contribution_per_extra_case=1500, # placeholder: income less marginal cost per extra elective case
     allocation_rule="proportional",  # or "benefit"
+    max_cases_per_session=3,          # cases per session cap on the template (adjustable)
+    realisation_factor=1.0,           # share of templated cases that go ahead (cancellations): placeholder 100%
+    cap_delivered_at_demand=True,     # when demand is entered, delivered cases cannot exceed it
 )
 
 # ---------------------------------------------------------------------------
@@ -331,7 +347,7 @@ def _sp(label, specialty, cases_medium, cases_large, comparators, reductions, ex
     return dict(label=label, specialty=specialty, cases_medium=cases_medium, cases_large=cases_large,
                 comparators=comparators, reductions=reductions, extra_minutes=extra_minutes,
                 cases_per_list=cases_per_list, list_sessions=list_sessions, nhse_priority=False,
-                p_open_rationale=rationale, evidence_note=evidence)
+                p_open_rationale=rationale, evidence_note=evidence, tariff_uplift=0.0)
 
 
 def _r(los=0.0, conv=0.0, reop=0.0, comp=0.0, readm=0.0):
@@ -380,7 +396,13 @@ SP_GROUPS = {
         dict(conventional_mis=20, open=0), 2, 2,
         "Most would have video-assisted thoracoscopic surgery; some open thoracotomy.",
         "Early international series only; effect sizes are best-available estimates."),
+    "sp_not_modelled": _sp(
+        "Other robotic cases (not modelled)", "Other", 0, 0,
+        dict(conventional_mis=1.0), dict(conventional_mis=_r()), dict(conventional_mis=0), 1, 1,
+        "Cases on the template that map to no modelled procedure: costs only, no 30-day benefit.",
+        "Not modelled: costs only."),
 }
+NOT_MODELLED = {"not_modelled", "sp_not_modelled"}
 SP_REDUCTION_KEYS = ["los", "conv", "reop", "comp", "readm"]
 
 
@@ -440,6 +462,7 @@ FIELD_LABELS = {
     "los": "bed-days saved", "conv": "conversions avoided", "reop": "returns to theatre avoided",
     "comp": "major complications avoided", "readm": "readmissions avoided",
     "extra_minutes": "extra theatre minutes", "share": "share",
+    "tariff_uplift": "extra tariff income per robotic case",
 }
 UNIT_COST_LABELS = {
     "bed_day": "Excess bed-day", "reoperation": "Return to theatre (non-ward)",
@@ -447,3 +470,73 @@ UNIT_COST_LABELS = {
     "conversion": "Conversion to open (non-ward)", "theatre_minute": "Extra theatre minute",
     "decontamination_per_case": "Sterile services per robotic case",
 }
+
+
+# ---------------------------------------------------------------------------
+# Two-week theatre template (v0.6)
+#
+# Each robot has 14 days (Monday to Sunday, twice) x 3 sessions (AM, PM, evening).
+# Each session has a list type and a case entry. Case tiers (major, medium, minor)
+# map to procedure groups through LIST_TYPES; the mapping and splits are editable
+# (advanced table) and flagged as user-modified when changed. A tier mapped to no
+# group counts as "not modelled": costs only, no 30-day benefit.
+#
+# Standard hours are weekday AM and PM. Blank standard sessions are open but
+# unbooked; blank evening and weekend sessions are not in use. Friday PM is kept
+# for maintenance by default.
+# ---------------------------------------------------------------------------
+TIERS = ["major", "medium", "minor"]
+SESSIONS = ["AM", "PM", "Eve"]
+SESSION_LABELS = {"AM": "AM", "PM": "PM", "Eve": "Evening"}
+DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+WEEKDAYS = DAYS[:5]
+SPECIAL_ENTRIES = {"": "blank", "Empty": "open, unbooked", "Closed": "not available",
+                   "Maintenance": "not available (maintenance)", "Continuing": "case continuing from the previous session"}
+
+LIST_TYPES = {
+    "colorectal": dict(label="Colorectal", major=[["colorectal", 1.0]], medium=[], minor=[],
+                       pattern=["1 major", "1 major", "1 major"]),
+    "upper_gi": dict(label="Upper GI", major=[], medium=[], minor=[["upper_gi", 1.0]],
+                     pattern=["2 minor", "2 minor", "2 minor"]),
+    "abdominal_wall": dict(label="Abdominal wall", major=[["abdominal_wall", 1.0]], medium=[], minor=[],
+                           pattern=["1 major", "1 major", "1 major"]),
+    "urology_prostate": dict(label="Urology: prostate", major=[], medium=[["prostatectomy", 1.0]], minor=[],
+                             pattern=["2 medium", "1 medium", "1 medium"]),
+    "urology_kidney": dict(label="Urology: kidney", major=[], medium=[["nephrectomy", 1.0]], minor=[],
+                           pattern=["2 medium", "1 medium", "1 medium"]),
+    "urology_bladder": dict(label="Urology: bladder", major=[], medium=[["cystectomy", 1.0]], minor=[],
+                            pattern=["1 medium", "Continuing", "1 medium"]),
+    "gynaecology": dict(label="Gynaecology",
+                        major=[["hysterectomy", 0.40], ["endometriosis", 0.50], ["myomectomy", 0.10]],
+                        medium=[], minor=[["adnexal", 1.0]],
+                        pattern=["2 major", "1 major + 1 minor", "1 major"]),
+    "paediatric": dict(label="Paediatric", major=[["paediatric", 1.0]], medium=[], minor=[],
+                       pattern=["2 major", "2 major", "2 major"]),
+    "head_neck": dict(label="Head and neck", major=[["head_neck", 1.0]], medium=[], minor=[],
+                      pattern=["2 major", "1 major", "1 major"]),
+    "other": dict(label="Other (not modelled)", major=[], medium=[], minor=[], pattern=["1 major", "1 major", "1 major"]),
+}
+SP_LIST_TYPES = {
+    "sp_prostate": dict(label="Urology: prostate (single-port)", major=[], medium=[["sp_prostatectomy", 1.0]], minor=[],
+                        pattern=["2 medium", "1 medium", "1 medium"]),
+    "sp_kidney": dict(label="Urology: kidney (single-port)", major=[], medium=[["sp_kidney", 1.0]], minor=[],
+                      pattern=["2 medium", "1 medium", "1 medium"]),
+    "sp_transoral": dict(label="Head and neck: transoral (single-port)", major=[["sp_transoral", 1.0]], medium=[],
+                         minor=[], pattern=["2 major", "1 major", "1 major"]),
+    "sp_transanal": dict(label="Colorectal: transanal (single-port)", major=[], medium=[], minor=[["sp_transanal", 1.0]],
+                         pattern=["2 minor", "2 minor", "2 minor"]),
+    "sp_thoracic": dict(label="Thoracic (single-port)", major=[["sp_thoracic", 1.0]], medium=[], minor=[],
+                        pattern=["1 major", "1 major", "1 major"]),
+    "other": dict(label="Other (not modelled)", major=[], medium=[], minor=[], pattern=["1 major", "1 major", "1 major"]),
+}
+TEMPLATE_VARIANTS = {"standard": "Standard day (weekday AM and PM)",
+                     "extended": "Extended day (three sessions Monday to Thursday)"}
+
+# Tariff (cash case only). Extra income per robotic case over what the trust would
+# earn for the same patient without the robot. All groups default to £0.
+TARIFF_SOURCES = {
+    "prostatectomy": ("To be entered. Robotic prostatectomy groups to a robotic-specific HRG in the NHS Payment Scheme. "
+                      "Enter the 2026/27 unit price for that HRG (Annex A, August 2026 pay-award update) minus the "
+                      "price the same patient's open operation would earn. The figure could not be extracted for v0.6."),
+}
+DEFAULT_TARIFF_SOURCE = "No robotic price difference identified: £0."

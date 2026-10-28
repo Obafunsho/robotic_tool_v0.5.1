@@ -6,7 +6,8 @@ Pipeline (each step is a small, separately testable function):
   2. capacity            sessions/yr = robots x sessions_per_week x weeks
   3. fortnightly plan    whole dedicated lists (each at least min_list_fill full) plus
                          shared half-day sessions that pool the remaining demand
-  4. cases               dedicated + shared cases, capped at max_cases_per_robot x robots,
+  4. cases               template (or planned) cases; above max_cases_per_robot x robots is
+                         flagged amber (advisory, v0.6.1), not cut,
                          then x util_t
   5. counterfactual      open_g = cases x p_open ; elsewhere_g = cases x p_robot_elsewhere ;
                          lap_g = the rest (shares are what would happen WITHOUT the robot)
@@ -27,6 +28,7 @@ import copy
 import math
 
 import defaults as D
+import templates as T
 
 EVENT_KEYS = ["bed_days", "conversions", "reoperations", "complications", "readmissions"]
 
@@ -35,12 +37,16 @@ EVENT_KEYS = ["bed_days", "conversions", "reoperations", "complications", "readm
 # 0. Configuration
 # ---------------------------------------------------------------------------
 def build_config(preset="medium_dgh_1", platform="platform_b", evidence="central",
-                 overrides=None, plan=None, instrument_price="list"):
+                 overrides=None, plan=None, instrument_price="list", template="standard"):
     """Assemble a full input set from defaults, then apply user overrides.
 
     overrides = {"groups": {gkey: {field: value}}, "unit_costs": {...},
-                 "programme": {...}, "platform": {...}, "robots": int}
-    plan      = {gkey: sessions_per_fortnight}  (manual plan; None = automatic)
+                 "programme": {...}, "platform": {...}, "robots": int,
+                 "list_map": {list type: {tier: [[group, share], ...]}},
+                 "demand_check": bool}
+    template  = "standard" or "extended" (pre-filled from demand), a grid (list per
+                robot), or None for the v0.5 demand-led planner.
+    plan      = {gkey: sessions_per_fortnight}  (manual v0.5 plan; implies no template)
     """
     p = D.PRESETS[preset]
     sp = D.PLATFORMS[platform].get("procedure_set") == "single_port"
@@ -64,6 +70,13 @@ def build_config(preset="medium_dgh_1", platform="platform_b", evidence="central
     cfg["platform"].update(o.get("platform", {}))
     if "robots" in o:
         cfg["robots"] = int(o["robots"])
+    cfg["list_map"] = T.default_list_types("single_port" if sp else "multiport")
+    for lt, spec in o.get("list_map", {}).items():
+        if lt in cfg["list_map"]:
+            for t in D.TIERS:
+                if t in spec:
+                    cfg["list_map"][lt][t] = copy.deepcopy(spec[t])
+    cfg["demand_check"] = bool(o.get("demand_check", True))
     # instrument price setting: a named setting multiplies the platform price;
     # a number replaces it outright (the trust's quote)
     pf = cfg["platform"]
@@ -75,6 +88,15 @@ def build_config(preset="medium_dgh_1", platform="platform_b", evidence="central
         pf["instruments_per_case"] = pf["instruments_list_price"] * D.INSTRUMENT_PRICE_SETTINGS[instrument_price]
         cfg["instrument_price_setting"] = instrument_price
     validate(cfg)
+    cfg["template_variant"] = None
+    if plan is not None or template is None or template is False:
+        cfg["template"] = None
+    elif isinstance(template, str):
+        cfg["template"] = T.suggest_template(cfg, template)
+        cfg["template_variant"] = template
+    else:
+        cfg["template"] = T.resize(template, cfg["robots"])
+        cfg["template_variant"] = "custom"
     return cfg
 
 
@@ -83,6 +105,8 @@ def is_multi_comparator(g):
 
 
 def validate(cfg):
+    if "list_map" in cfg:
+        T.validate_list_map(cfg)
     for gk, g in cfg["groups"].items():
         if is_multi_comparator(g):
             sh = g["comparators"]
@@ -133,14 +157,20 @@ def modified_priors(cfg):
                                     used=g["extra_minutes"][c]))
             if g["cases_per_list"] != ref["cases_per_list"]:
                 out.append(dict(item=f"{gk}.cases_per_list", default=ref["cases_per_list"], used=g["cases_per_list"]))
+            if g.get("tariff_uplift", 0.0) != ref.get("tariff_uplift", 0.0):
+                out.append(dict(item=f"{gk}.tariff_uplift", default=ref.get("tariff_uplift", 0.0),
+                                used=g.get("tariff_uplift", 0.0)))
             continue
         for k in D.BENEFIT_KEYS + ["p_open", "p_robot_elsewhere", "cases_per_list",
-                                   "extra_minutes_open", "extra_minutes_lap"]:
+                                   "extra_minutes_open", "extra_minutes_lap", "tariff_uplift"]:
             if g.get(k, 0.0) != D.PROCEDURE_GROUPS[gk].get(k, 0.0):
                 out.append(dict(item=f"{gk}.{k}", default=D.PROCEDURE_GROUPS[gk].get(k, 0.0), used=g.get(k, 0.0)))
     for k, v in cfg["unit_costs"].items():
         if v != D.UNIT_COSTS[k]:
             out.append(dict(item=f"unit_costs.{k}", default=D.UNIT_COSTS[k], used=v))
+    if "list_map" in cfg:
+        sp = any(is_multi_comparator(g) for g in cfg["groups"].values())
+        out += T.modified_mapping(cfg, T.default_list_types("single_port" if sp else "multiport"))
     return out
 
 
@@ -273,7 +303,7 @@ def normalise_plan(cfg, plan):
 
 def delivered_cases(cfg, plan):
     """Annual cases per group at full utilisation: dedicated lists plus a share of
-    the shared sessions, then capped at max_cases_per_robot x robots.
+    the shared sessions. Totals above max_cases_per_robot x robots are flagged, not cut.
     Returns (per-group dict, summary dict)."""
     f = fortnights_per_year(cfg)
     need = shared_need(cfg, plan)
@@ -290,7 +320,7 @@ def delivered_cases(cfg, plan):
                       shared_sessions=sess)
     total = sum(v["dedicated"] + v["shared"] for v in out.values())
     cap_cases = cfg["programme"].get("max_cases_per_robot", 700) * cfg["robots"]
-    scale = min(1.0, cap_cases / total) if total > 0 else 1.0
+    scale = 1.0
     for v in out.values():
         v["total"] = (v["dedicated"] + v["shared"]) * scale
     shared_fill = (min(need_total / S, 1.0) if S else None)
@@ -505,30 +535,55 @@ def run(cfg):
     f = fortnights_per_year(cfg)
     thr = pr.get("min_list_fill", 0.75)
     fixed = cfg.get("fixed_cases")            # benchmark profiles: delivered cases given directly
+    use_template = fixed is None and cfg.get("template") is not None and cfg["manual_plan"] is None
+    tsum = None
+    template_cases = {}
 
-    if fixed is not None:
+    if use_template:
+        tsum = T.summarise(cfg)
+        cap = tsum["available"]
+        booked = tsum["booked"]
+        plan = normalise_plan(cfg, {})
+        real = pr.get("realisation_factor", 1.0)
+        check = cfg.get("demand_check", True)
+        dc = {}
+        for k, g in cfg["groups"].items():
+            tc = tsum["cases_per_fortnight"][k] * f * real
+            template_cases[k] = tc
+            deliv = (min(tc, g["volume"]) if (check and pr.get("cap_delivered_at_demand", True)
+                                              and k not in D.NOT_MODELLED) else tc)
+            dc[k] = dict(dedicated=deliv, raw_dedicated=tc, shared=0.0, shared_sessions=0.0, total=deliv)
+        cap_cases = pr.get("max_cases_per_robot", 700) * cfg["robots"]
+        tot_t = sum(v["total"] for v in dc.values())
+        scale = 1.0
+        summ = dict(total_before_cap=tot_t, cap_cases=cap_cases, cap_scale=scale, shared_sessions=0,
+                    shared_fill=None)
+        for msg in tsum["issues"]:
+            warnings.append(f"Template: {msg}")
+        nm = T.not_modelled_key(cfg)
+        if template_cases.get(nm, 0) >= 0.5:
+            warnings.append(f"{template_cases[nm]:,.0f} templated cases a year map to no modelled procedure: "
+                            "they are costed but carry no 30-day benefit.")
+    elif fixed is not None:
         plan = normalise_plan(cfg, {})
         dc = {k: dict(dedicated=0.0, raw_dedicated=0.0, shared=0.0, shared_sessions=0.0,
                       total=float(fixed.get(k, 0.0))) for k in cfg["groups"]}
         cap_cases = pr.get("max_cases_per_robot", 700) * cfg["robots"]
         tot_fixed = sum(v["total"] for v in dc.values())
-        if tot_fixed > cap_cases:
-            for v in dc.values():
-                v["total"] *= cap_cases / tot_fixed
-        summ = dict(total_before_cap=tot_fixed, cap_cases=cap_cases, cap_scale=min(1.0, cap_cases / tot_fixed)
-                    if tot_fixed else 1.0, shared_sessions=0, shared_fill=None)
+        summ = dict(total_before_cap=tot_fixed, cap_cases=cap_cases, cap_scale=1.0, shared_sessions=0,
+                    shared_fill=None)
         booked = sum(v["total"] / cases_per_session(cfg["groups"][k]) for k, v in dc.items()) / f
     else:
         plan = cfg["manual_plan"] if cfg["manual_plan"] is not None else auto_plan(cfg)
         plan = normalise_plan(cfg, plan)
         dc, summ = delivered_cases(cfg, plan)
         booked = sum(plan.values())
-    if booked > cap + 1e-9 and fixed is None:
+    if booked > cap + 1e-9 and fixed is None and not use_template:
         warnings.append(f"The plan books {booked:g} sessions per fortnight but capacity is {cap}.")
-    if summ["cap_scale"] < 1.0:
-        warnings.append(f"Planned activity of {summ['total_before_cap']:,.0f} cases a year exceeds the cap of "
-                        f"{pr.get('max_cases_per_robot', 700):,} cases per robot; cases were scaled down to "
-                        f"{summ['cap_cases']:,.0f}.")
+    if summ["total_before_cap"] > summ["cap_cases"] + 1e-6:
+        warnings.append(f"Planned activity of {summ['total_before_cap']:,.0f} cases a year is above "
+                        f"{pr.get('max_cases_per_robot', 700):,} cases per robot (advisory): check surgeon numbers, "
+                        "staffing and whether the lists are achievable.")
     if cfg["platform"].get("illustrative"):
         warnings.append(f"{cfg['platform']['label']}: the price is illustrative; enter the trust's quote.")
 
@@ -536,6 +591,28 @@ def run(cfg):
     for k, g in cfg["groups"].items():
         d = dc[k]
         fill = None
+        if use_template:
+            tc = template_cases[k]
+            check = cfg.get("demand_check", True) and k not in D.NOT_MODELLED
+            demand = g["volume"] if check else tc
+            if tc > 0 and check:
+                fill = min(tc, demand) / tc
+                if fill < thr - 1e-9:
+                    warnings.append(f"{g['label']}: the template schedules {tc:,.0f} cases a year but demand is "
+                                    f"{demand:,.0f}, so its lists would be only {fill:.0%} full.")
+            unmet = max(demand - d["total"], 0.0) if check else 0.0
+            if unmet >= 0.5:
+                has_lists = tc > 0
+                if has_lists:
+                    why = "the template does not schedule enough cases"
+                else:
+                    why = "the template has no lists for it"
+                sched = f"{d['total']:,.0f} of {demand:,.0f} scheduled" if has_lists else "none scheduled"
+                warnings.append(f"{g['label']}: {unmet:,.0f} cases a year are not scheduled ({sched}); {why}.")
+            groups_out[k] = dict(label=g["label"], sessions_per_fortnight=tsum["group_sessions"][k],
+                                 ceiling=demand, dedicated_cases=d["total"], shared_cases=0.0,
+                                 template_cases=tc, planned_cases=d["total"], unmet_cases=unmet, list_fill=fill)
+            continue
         if plan.get(k):
             fill = min(d["raw_dedicated"], ceiling_cases(g)) / d["raw_dedicated"] if d["raw_dedicated"] else 0.0
             if fill < thr - 1e-9:
@@ -546,9 +623,7 @@ def run(cfg):
         unmet = max(ceiling_cases(g) - d["total"], 0.0)
         if fixed is None and unmet >= 0.5:
             has_lists = bool(plan.get(k)) or d["shared"] >= 0.5
-            if summ["cap_scale"] < 1.0:
-                why = f"the cap of {pr.get('max_cases_per_robot', 700):,} cases per robot is reached"
-            elif booked >= cap:
+            if booked >= cap:
                 why = ("robot capacity is fully booked" if has_lists
                        else "robot capacity is fully booked by other specialties")
             else:
@@ -563,6 +638,8 @@ def run(cfg):
                              shared_cases=d["shared"], planned_cases=d["total"], unmet_cases=unmet,
                              list_fill=fill)
 
+    if use_template and cfg.get("demand_check", True):
+        warnings.extend(split_mismatch_warnings(cfg, groups_out, thr))
     cases_full = {k: v["planned_cases"] for k, v in groups_out.items()}
     yearly = []
     for t in range(1, pr["horizon_years"] + 1):
@@ -574,7 +651,9 @@ def run(cfg):
         extra_cases = tot["bed_days"] / pr["mean_elective_los_for_capacity"]
         cap_value = extra_cases * pr["contribution_per_extra_case"] if pr.get("include_capacity_value") else 0.0
         offsets += cap_value
+        tariff = sum(ev["cases"] * cfg["groups"][k].get("tariff_uplift", 0.0) for k, ev in by_group.items())
         yearly.append(dict(capacity_value=cap_value, year=t, utilisation=util, benefit_multiplier=mult, **tot,
+                           tariff_income=tariff, net_cash_cost=c["gross_cost"] - tariff,
                            extra_elective_cases_enabled=extra_cases, **c,
                            extra_cost=c["gross_cost"],
                            offsets=offsets, net_cost=c["gross_cost"] - offsets,
@@ -589,7 +668,10 @@ def run(cfg):
                         "or more specialties.")
     spare = cap - booked
     unmet_all = sum(g["unmet_cases"] for g in groups_out.values())
-    if fixed is None and spare >= 1:
+    if use_template and spare >= 1:
+        warnings.append(f"{spare:g} open session{'s' if spare != 1 else ''} per fortnight left unbooked on the "
+                        "template.")
+    elif fixed is None and spare >= 1:
         why = ("all demand entered is already scheduled" if unmet_all < 0.5 else
                f"the remaining demand ({unmet_all:,.0f} cases a year) is too small to fill another list at "
                f"least {thr:.0%} full")
@@ -598,7 +680,7 @@ def run(cfg):
     sum_keys = ["cases", "open_avoided", "robot_elsewhere"] + EVENT_KEYS + [
         "extra_elective_cases_enabled", "capacity_value", "gross_cost", "offsets", "net_cost",
         "platform_fixed", "instruments", "decontamination", "staffing", "theatre_time_cost",
-        "implementation", "theatre_modification"]
+        "implementation", "theatre_modification", "tariff_income", "net_cash_cost"]
     totals = {k: sum(y[k] for y in yearly) for k in sum_keys}
     totals["extra_cost"] = totals["gross_cost"]
 
@@ -626,13 +708,15 @@ def run(cfg):
                                                 max(pf.get("capital", 0) - pf.get("trade_in", 0), 0))
                             if pf["model"] == "purchase" else 0.0))
     return dict(price_targets=prices, guardrails=guard,
-                config=cfg, plan=plan, grid=fortnight_grid(cfg, plan), groups=groups_out,
+                config=cfg, plan=plan, grid=(tsum["cells"] if use_template else fortnight_grid(cfg, plan)),
+                input_mode="template" if use_template else ("fixed" if fixed is not None else "demand"),
+                template_summary=tsum, groups=groups_out,
                 capacity_per_fortnight=cap, booked_sessions_per_fortnight=booked,
                 spare_sessions_per_fortnight=max(spare, 0), shared=summ,
                 booked_utilisation=util_booked, robots_needed=robots_needed(cfg),
                 cases_per_robot=yearly[min(3, len(yearly)) - 1]["cases"] / cfg["robots"],
                 yearly=yearly, totals=totals, economic=economic_cash_flows(cfg, yearly), capital=capital,
-                break_even=break_even(cfg, cases_full, booked), user_modified=mods,
+                break_even=break_even(cfg, cases_full, booked, cap), user_modified=mods,
                 unmet_cases=sum(g["unmet_cases"] for g in groups_out.values()),
                 warnings=warnings)
 
@@ -652,23 +736,22 @@ def steady_state_net(cfg, cases_by_group, scale):
     return c["gross_cost"] - offsets_value(tot, uc) - cap_value, tot["cases"]
 
 
-def max_deliverable_cases(cfg, base_cases, booked_sessions):
-    """The most cases a year the programme could deliver at this case mix: the
-    lower of the per-robot cap and full use of every session at the planned
-    cases per session."""
-    hard_cap = cfg["programme"].get("max_cases_per_robot", 700) * cfg["robots"]
+def max_deliverable_cases(cfg, base_cases, booked_sessions, capacity=None):
+    """The most cases a year the programme could deliver at this case mix: every
+    available session used at the planned cases per session. (The 700-per-robot
+    figure is advisory from v0.6.1 and does not limit this.)"""
+    capacity = capacity_per_fortnight(cfg) if capacity is None else capacity
     if booked_sessions and booked_sessions > 0:
-        by_sessions = base_cases * capacity_per_fortnight(cfg) / booked_sessions
-        return min(hard_cap, by_sessions)
-    return hard_cap
+        return base_cases * capacity / booked_sessions
+    return base_cases
 
 
-def break_even(cfg, cases_by_group, booked_sessions):
+def break_even(cfg, cases_by_group, booked_sessions, capacity=None):
     base_net, base_cases = steady_state_net(cfg, cases_by_group, 1.0)
     if base_cases <= 0:
         return dict(status="no_cases", planned_cases=0, net_cost_at_plan=base_net, break_even_cases=None,
                     max_cases=None, note="No robotic cases planned.")
-    max_cases = max_deliverable_cases(cfg, base_cases, booked_sessions)
+    max_cases = max_deliverable_cases(cfg, base_cases, booked_sessions, capacity)
     max_scale = max(max_cases / base_cases, 1.0)
     net_max, _ = steady_state_net(cfg, cases_by_group, max_scale)
     margin = (steady_state_net(cfg, cases_by_group, 2.0)[0] - base_net) / base_cases
@@ -737,6 +820,10 @@ def spend_guardrails(cfg, plan, groups_out, util, yearly, warnings):
     def add(name, value, status, rule):
         out.append(dict(check=name, value=value, status=status, rule=rule))
 
+    per_robot = y["cases"] / cfg["robots"]
+    capr = pr.get("max_cases_per_robot", 700)
+    add("Robotic cases per robot per year", f"{per_robot:,.0f}", "green" if per_robot <= capr else "amber",
+        f"Advisory: above {capr:,} a year, check surgeon numbers, staffing and whether the lists are achievable.")
     add("Robot utilisation (booked sessions)", f"{util:.0%}",
         "green" if util >= 0.85 else "amber" if util >= pr["low_utilisation_warning"] else "red",
         "Green 85% or more; red below 75%.")
@@ -749,7 +836,8 @@ def spend_guardrails(cfg, plan, groups_out, util, yearly, warnings):
              if g["sessions_per_fortnight"] and g["list_fill"] is not None and g["list_fill"] < thr - 1e-9]
     add("Lists less than 75% full", str(len(short)),
         "green" if not short else "amber",
-        "Every dedicated list should be at least 75% full; the automatic plan never creates one that is not.")
+        "Every list should be at least 75% full: templated cases are checked against demand, and the automatic "
+        "plan never creates an under-filled list.")
     s = cfg.get("instrument_price_setting", "list")
     add("Instrument price basis", D.INSTRUMENT_PRICE_LABELS.get(s, s),
         "green" if s in ("volume_discount", "custom") else "amber" if s == "standard_discount" else "red",
@@ -829,6 +917,8 @@ def overrides_from_prior_rows(rows, platform):
 # ---------------------------------------------------------------------------
 def describe_item(cfg, item):
     parts = item.split(".")
+    if parts[0] == "list_map":
+        return f"Template mapping: {T.label_of(cfg, parts[1])}, {parts[2]} cases"
     if parts[0] == "unit_costs":
         return D.UNIT_COST_LABELS.get(parts[1], parts[1].replace("_", " "))
     g = cfg["groups"].get(parts[0]) or D.PROCEDURE_GROUPS.get(parts[0]) or D.SP_GROUPS.get(parts[0])
@@ -839,3 +929,33 @@ def describe_item(cfg, item):
         return (f"{name}: {D.FIELD_LABELS.get(parts[2], parts[2])} versus "
                 f"{D.COMPARATOR_LABELS.get(parts[1], parts[1]).lower()}")
     return f"{name}: {D.FIELD_LABELS.get(parts[1], parts[1].replace('_', ' '))}"
+
+
+def fmt_value(v):
+    """Readable value for a changed assumption (numbers or mapping text)."""
+    return v if isinstance(v, str) else f"{v:g}"
+
+
+def split_mismatch_warnings(cfg, groups_out, thr):
+    """Explain when a tier's split differs from the demand mix so much that meeting
+    demand for one procedure over-schedules another."""
+    out = []
+    for lt, spec in cfg["list_map"].items():
+        for t in D.TIERS:
+            m = spec.get(t, [])
+            if len(m) < 2:
+                continue
+            gs = [g for g, _ in m]
+            if not any(groups_out[g]["list_fill"] is not None and groups_out[g]["list_fill"] < thr - 1e-9
+                       for g in gs):
+                continue
+            dem = sum(cfg["groups"][g]["volume"] for g in gs)
+            if dem <= 0:
+                continue
+            split = ", ".join(f"{cfg['groups'][g]['label'].split(' (')[0].lower()} {sh:.0%}" for g, sh in m)
+            mix = ", ".join(f"{cfg['groups'][g]['label'].split(' (')[0].lower()} {cfg['groups'][g]['volume'] / dem:.0%}"
+                            for g in gs)
+            out.append(f"{spec['label']} {t} cases: the template split ({split}) differs from the demand mix "
+                       f"({mix}), so meeting demand for some procedures over-schedules others. Review the split in "
+                       "the advanced mapping table, or the demand.")
+    return out

@@ -1,13 +1,16 @@
 """
-Robotic Programme Decision Tool: web interface.
+Robotic Programme Decision Tool: web interface (v0.6).
 
 Run locally:   streamlit run app.py
-All calculations come from engine.py; the Word document from business_case.py.
-No data entered here is stored on the server. A case can be saved as an inputs
-file (.json) and reloaded later.
+The main input is a two-week theatre template per robot. All calculations come
+from engine.py; the Word document, which remains the main output, from
+business_case.py. Nothing entered is stored on the server; a case can be saved as
+an inputs file (.json) and reloaded.
 """
+import copy
 import json
 from datetime import date
+from pathlib import Path
 
 import altair as alt
 import pandas as pd
@@ -20,13 +23,36 @@ import engine as E
 import inputs_io as IO
 import register as RG
 import sensitivity as S
+import templates as T
 
-st.set_page_config(page_title="Robotic Programme Decision Tool", layout="wide")
+HERE = Path(__file__).parent
+st.set_page_config(page_title="Robotic Programme Decision Tool", layout="wide",
+                   page_icon=str(HERE / "static" / "favicon.png"))
 
-LIST_LABELS = {1: "Half day", 2: "All day"}
-STATUS_STYLE = {"Green": "background-color:#C6EFCE", "Amber": "background-color:#FFEB9C",
-                "Red": "background-color:#FFC7CE"}
+# Restrained institutional styling. Streamlit's own chrome is hidden where its
+# configuration and stable test identifiers allow (see README: Streamlit limits).
+st.markdown("""
+<style>
+  [data-testid="stDecoration"], [data-testid="stMainMenu"], #MainMenu, footer,
+  [data-testid="stAppDeployButton"], .stDeployButton { display: none !important; }
+  header[data-testid="stHeader"] { background: transparent; }
+  .block-container { padding-top: 1.6rem; max-width: 1280px; }
+  h1 { letter-spacing: -0.01em; border-bottom: 2px solid #1F3864; padding-bottom: 0.35rem; }
+  h2, h3 { color: #1F3864; }
+  [data-testid="stMetricValue"] { color: #1F3864; }
+  [data-testid="stMetricLabel"] p { font-size: 0.85rem; color: #4A5260; }
+  .stTabs [data-baseweb="tab"] { font-weight: 600; }
+  .rpdt-note { border-left: 3px solid #1F3864; background: #F3F5F8; padding: 0.6rem 0.9rem;
+               margin: 0.4rem 0 1rem 0; font-size: 0.92rem; }
+  .rpdt-meta { color: #4A5260; font-size: 0.85rem; }
+</style>
+""", unsafe_allow_html=True)
+
+STATUS_STYLE = {"Green": "background-color:#DCEFE0", "Amber": "background-color:#FFF1C9",
+                "Red": "background-color:#F8D7DA"}
 PROSTATE_OPTIONS = ["Open surgery", "Robotic surgery at another centre"]
+LT_TINTS = ["#E3EAF4", "#E6F0EA", "#F4ECE1", "#EDE6F2", "#F3E4E4", "#E2EFF1", "#F1F0DD", "#E9E9E9",
+            "#E4E8EE", "#EFE6EA", "#E8EEE3"]
 
 
 def gbp(x):
@@ -39,12 +65,16 @@ def gbpm(x):
     return f"£{x / 1e6:,.2f}M"
 
 
+def note(text):
+    st.markdown(f'<div class="rpdt-note">{text}</div>', unsafe_allow_html=True)
+
+
 # ---------------------------------------------------------------------------
-# Reloading a saved case: values are placed in session state before any
-# widget is drawn, so every input starts from the saved case.
+# Reloading a saved case: values are placed in session state before widgets
 # ---------------------------------------------------------------------------
 ss = st.session_state
 ss.setdefault("load_count", 0)
+ss.setdefault("grid_version", 0)
 ss.setdefault("loaded_case", None)
 if ss.get("pending_case") is not None:
     case_in = ss.pop("pending_case")
@@ -57,18 +87,22 @@ if ss.get("pending_case") is not None:
         elif f != "contract_volume_basis":
             ss[f"pf-{c_in['platform']}-{f}"] = float(v)
     ss["loaded_case"] = case_in
+    ss["grid"] = copy.deepcopy(c_in.get("template")) if c_in.get("template") else None
+    ss["grid_key"] = None
     ss["load_count"] += 1
+    ss["grid_version"] += 1
 
 defaults = dict(w_hospital=IO.HOSPITAL_LABELS["medium"], w_robots=1, w_platform="platform_b",
                 w_price_mode="list", w_central=0, w_evidence="central", w_capvalue=False,
-                w_prost=PROSTATE_OPTIONS[0], w_basis="per_robot")
+                w_prost=PROSTATE_OPTIONS[0], w_basis="per_robot", w_variant="standard", w_maxcases=3,
+                w_demandcheck=True, w_realisation=100)
 for k, v in defaults.items():
     ss.setdefault(k, v)
 
 # ---------------------------------------------------------------------------
 # Sidebar: the decision being appraised
 # ---------------------------------------------------------------------------
-st.sidebar.header("Configuration")
+st.sidebar.markdown("### Configuration")
 up = st.sidebar.file_uploader("Reload a saved case (.json)", type=["json"])
 if up is not None and ss.get("last_upload") != up.file_id:
     ss["last_upload"] = up.file_id
@@ -82,11 +116,17 @@ if up is not None and ss.get("last_upload") != up.file_id:
 hospital = st.sidebar.radio("Hospital type", list(IO.HOSPITAL_LABELS.values()), key="w_hospital")
 robots = st.sidebar.radio("Number of robots", [1, 2], horizontal=True, key="w_robots")
 preset = ("medium_dgh_" if hospital.startswith("Medium") else "large_") + str(robots)
-
 platform = st.sidebar.selectbox("Platform", list(D.PLATFORMS), key="w_platform",
                                 format_func=lambda k: D.PLATFORMS[k]["label"])
 pf_default = D.PLATFORMS[platform]
 proc_set = pf_default.get("procedure_set", "multiport")
+variant = st.sidebar.radio("Starting template", list(D.TEMPLATE_VARIANTS), key="w_variant",
+                           format_func=lambda k: D.TEMPLATE_VARIANTS[k])
+maxcases = st.sidebar.number_input("Maximum cases per session", min_value=1, max_value=6, step=1, key="w_maxcases")
+realisation = st.sidebar.number_input("Templated cases that go ahead (%)", min_value=50, max_value=100, step=1,
+                                      key="w_realisation",
+                                      help="Allows for cancellations and under-runs. 100% means every templated "
+                                           "case goes ahead (placeholder).")
 
 price_mode = st.sidebar.selectbox("Instrument price", ["list", "standard_discount", "volume_discount", "custom"],
                                   key="w_price_mode", format_func=lambda k: D.INSTRUMENT_PRICE_LABELS[k])
@@ -95,68 +135,126 @@ if price_mode == "custom":
     ss.setdefault("w_quote", float(pf_default.get("instruments_per_case", 0)))
     instrument_price = st.sidebar.number_input("Trust quote: instruments per case (£)", min_value=0.0,
                                                step=50.0, key="w_quote")
-
 central = 0
 if pf_default["model"] == "purchase":
     central = st.sidebar.selectbox("Central capital per robot", D.CENTRAL_CAPITAL_OPTIONS, key="w_central",
                                    format_func=lambda v: "None (trust pays)" if v == 0 else f"£{v:,.0f}")
-else:
-    st.sidebar.caption("Central capital applies to purchase models only.")
-
 basis = None
 if pf_default["model"] in ("managed_service", "per_procedure"):
     basis = st.sidebar.radio("Contract volumes apply", ["per_robot", "per_contract"], key="w_basis",
                              format_func=lambda k: D.CONTRACT_BASIS_LABELS[k].capitalize())
-
 evidence = st.sidebar.selectbox("Clinical benefit setting", list(D.EVIDENCE_SETTINGS), key="w_evidence",
                                 format_func=lambda k: D.EVIDENCE_LABELS[k])
 prost = PROSTATE_OPTIONS[0]
 if proc_set != "single_port" and preset.startswith("large"):
-    prost = st.sidebar.radio("Prostatectomy comparator", PROSTATE_OPTIONS, key="w_prost",
-                             help="Open surgery is the default. Robotic surgery at another centre is a sensitivity "
-                                  "scenario with no 30-day difference.")
+    prost = st.sidebar.radio("Prostatectomy comparator", PROSTATE_OPTIONS, key="w_prost")
 capacity_value = st.sidebar.checkbox("Value released bed-days as extra elective activity", key="w_capvalue")
-
 if pf_default.get("exploratory"):
     st.sidebar.warning("Exploratory platform: limited evidence, low UK use, illustrative price.")
+st.sidebar.markdown(f'<p class="rpdt-meta">Engine version {D.ENGINE_VERSION}. Draft: assumptions awaiting '
+                    'specialty review.</p>', unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# Header
+# ---------------------------------------------------------------------------
+st.title("Robotic Programme Decision Tool")
+st.markdown('<p class="rpdt-meta">A 30-day cost-consequence tool to guardrail spending on robot-assisted '
+            'surgery. It shows what an investment buys for patients and what it costs per outcome; it does not '
+            'claim robots save money.</p>', unsafe_allow_html=True)
+note("Draft. Every assumption is awaiting specialty review. Do not use the figures for approval until the "
+     "assumptions register has been signed off.")
+
+tab_in, tab_out, tab_sens, tab_bc = st.tabs(["Inputs", "Results", "Sensitivity and benchmark", "Business case"])
+
+loaded = ss.get("loaded_case")
+loaded_cfg = loaded["configuration"] if loaded else {}
+same = loaded and loaded_cfg.get("preset") == preset and loaded_cfg.get("platform") == platform
+loaded_groups = loaded_cfg.get("groups", {}) if same else {}
+loaded_map = loaded_cfg.get("list_map", {}) if same else {}
+try:
+    base_cfg = E.build_config(preset, platform, evidence, overrides={"groups": loaded_groups, "list_map": loaded_map},
+                              template=None)
+except ValueError:
+    base_cfg = E.build_config(preset, platform, evidence, template=None)
+key_sfx = f"{preset}-{proc_set}-{ss['load_count']}"
+lt_keys = list(base_cfg["list_map"])
+lt_label = {k: base_cfg["list_map"][k]["label"] for k in lt_keys}
+lt_from_label = {v: k for k, v in lt_label.items()}
+group_label = {k: g["label"] for k, g in base_cfg["groups"].items() if k not in D.NOT_MODELLED}
+group_from_label = {v: k for k, v in group_label.items()}
+
+# the template grid: regenerate when the starting point changes; a just-loaded
+# case keeps its own template
+grid_key = (preset, platform, robots, variant)
+if ss.get("grid") is None or ss.get("grid_key") != grid_key:
+    if ss.get("grid") is not None and ss.get("grid_key") is None:
+        ss["grid"] = T.resize(ss["grid"], robots)
+    else:
+        ss["grid"] = T.suggest_template(dict(base_cfg, robots=robots), variant)
+    ss["grid_version"] += 1
+ss["grid_key"] = grid_key
+
+
+def grid_to_df(robot_rows):
+    return pd.DataFrame(T.to_ui_rows(robot_rows, lt_label))
+
+
+def df_to_grid(df):
+    return T.from_ui_rows(df.to_dict("records"), lt_from_label)
+
 
 # ---------------------------------------------------------------------------
 # Inputs
 # ---------------------------------------------------------------------------
-st.title("Robotic Programme Decision Tool")
-st.caption("A 30-day cost-consequence tool to guardrail spending on robot-assisted surgery. It shows what an "
-           "investment buys for patients and what it costs per outcome. It does not claim robots save money.")
-st.warning("Draft: every assumption is awaiting specialty review. Do not use the figures for approval until the "
-           "assumptions register has been signed off.")
-
-tab_in, tab_out, tab_sens, tab_bc = st.tabs(["1. Inputs", "2. Results", "3. Sensitivity and benchmark",
-                                             "4. Business case"])
-loaded = ss.get("loaded_case")
-loaded_groups = {}
-if loaded and loaded["configuration"]["preset"] == preset and loaded["configuration"]["platform"] == platform:
-    loaded_groups = loaded["configuration"].get("groups", {})
-try:
-    base_cfg = E.build_config(preset, platform, evidence, overrides={"groups": loaded_groups})
-except ValueError:
-    base_cfg = E.build_config(preset, platform, evidence)
-key_sfx = f"{preset}-{proc_set}-{ss['load_count']}"
-
 with tab_in:
-    st.subheader("Case volumes and lists")
-    st.write("Annual robotic cases available for each specialty (demand). Set to 0 if the trust does not do it.")
-    st.caption(f"The cap of {D.PROGRAMME['max_cases_per_robot']:,} applies to the total robotic operations delivered "
-               "per robot per year across all specialties, not to any single entry here: you can enter more demand "
-               "than the robot can deliver, and the excess is reported as unmet demand. In practice theatre sessions "
-               "usually limit volume before the cap does; the cap only binds when lists hold many short cases.")
-    vol = pd.DataFrame([dict(group=k, Specialty=g["label"], **{"Robotic cases per year": g["volume"],
-                                                                "Cases per list": g["cases_per_list"],
-                                                                "List length": LIST_LABELS[g["list_sessions"]]})
-                        for k, g in base_cfg["groups"].items()])
-    vol_ed = st.data_editor(vol, key=f"vol-{key_sfx}", width="stretch", hide_index=True,
-                            disabled=["group", "Specialty"],
-                            column_config={"group": None, "List length": st.column_config.SelectboxColumn(options=list(LIST_LABELS.values())),
-                                           "Robotic cases per year": st.column_config.NumberColumn(min_value=0, step=5),
-                                           "Cases per list": st.column_config.NumberColumn(min_value=1, step=1)})
+    st.subheader("Two-week theatre template")
+    st.write("Fill in each robot's template as you would for a real two-week block. For each session choose a "
+             "list type and the cases on it: major, medium or minor cases, 'Continuing' for a case running on from "
+             "the previous session, or 'Closed'. The tool extrapolates the fortnight to a year.")
+    st.caption("Standard hours are weekday AM and PM; a blank standard session is open but unbooked. Evenings and "
+               "weekends are blank by default and count only when you book them (choose 'Empty' to offer one "
+               "without booking it). Friday PM is kept for maintenance. Utilisation is booked sessions divided by "
+               "available sessions.")
+    case_opts = T.case_options(maxcases)
+    edited = []
+    for rb in range(robots):
+        rows = ss["grid"][rb] if rb < len(ss["grid"]) else T.empty_robot()
+        st.markdown(f"**Robot {rb + 1}**")
+        colcfg = {"Day": st.column_config.TextColumn(disabled=True, width="small")}
+        for s in D.SESSIONS:
+            lab = D.SESSION_LABELS[s]
+            colcfg[f"{lab} list"] = st.column_config.SelectboxColumn(
+                options=T.ui_options([""] + [lt_label[k] for k in lt_keys]))
+            colcfg[f"{lab} cases"] = st.column_config.SelectboxColumn(options=T.ui_options(case_opts))
+        df = st.data_editor(grid_to_df(rows), key=f"grid-{rb}-{ss['grid_version']}", hide_index=True,
+                            width="stretch", height=36 * 15, column_config=colcfg, num_rows="fixed")
+        edited.append(df_to_grid(df))
+    grid_now = edited
+    c1, c2 = st.columns([1, 3])
+    if c1.button("Reset to the starting template"):
+        ss["grid"] = T.suggest_template(dict(base_cfg, robots=robots), variant)
+        ss["grid_version"] += 1
+        st.rerun()
+
+    with st.expander("Check against demand"):
+        st.write("Annual robotic demand by procedure. When the check is on, delivered cases cannot exceed demand, "
+                 "unmet demand is reported, and lists that demand cannot fill are flagged.")
+        demand_check = st.checkbox("Check the template against demand", key="w_demandcheck")
+        vol = pd.DataFrame([dict(group=k, Procedure=g["label"], **{"Annual demand": g["volume"]})
+                            for k, g in base_cfg["groups"].items() if k not in D.NOT_MODELLED])
+        vol_ed = st.data_editor(vol, key=f"vol-{key_sfx}", hide_index=True, width="stretch",
+                                disabled=["group", "Procedure"],
+                                column_config={"group": None, "Annual demand": st.column_config.NumberColumn(
+                                    min_value=0, step=5)})
+        st.caption(f"Above {D.PROGRAMME['max_cases_per_robot']:,} robotic operations per robot per year, across all "
+                   "procedures, the tool shows an amber advisory guardrail; it does not cut activity.")
+        if st.button("Suggest a template from this demand"):
+            tmp = E.build_config(preset, platform, evidence, overrides={"robots": robots, "groups": {
+                r["group"]: {"volume": float(r["Annual demand"])} for r in vol_ed.to_dict("records")}}, template=None)
+            tmp["programme"]["realisation_factor"] = float(realisation) / 100
+            ss["grid"] = T.suggest_template(tmp, variant)
+            ss["grid_version"] += 1
+            st.rerun()
 
     st.subheader("Platform prices")
     pf_over = {}
@@ -183,10 +281,38 @@ with tab_in:
         pf_over["contract_volume_basis"] = basis
     st.caption(f"Price basis: {pf_default['source']}")
 
+    with st.expander("Tariff: extra income per robotic case (cash case only)"):
+        st.write("Enter only the difference over what the trust would earn for the same patient without the robot. "
+                 "Tariff is a transfer within the NHS: it reduces the trust's cash cost but is excluded from the "
+                 "economic view and from cost per outcome.")
+        tar = pd.DataFrame([dict(group=k, Procedure=g["label"], **{"Extra income per case (£)": g.get("tariff_uplift", 0.0),
+                                                                  "Source": D.TARIFF_SOURCES.get(k, D.DEFAULT_TARIFF_SOURCE)})
+                            for k, g in base_cfg["groups"].items() if k not in D.NOT_MODELLED])
+        tar_ed = st.data_editor(tar, key=f"tariff-{key_sfx}", hide_index=True, width="stretch",
+                                disabled=["group", "Procedure", "Source"],
+                                column_config={"group": None, "Extra income per case (£)": st.column_config.NumberColumn(step=50)})
+
+    with st.expander("Template mapping: what major, medium and minor mean (advanced)"):
+        st.write("Each list type's tiers count as the procedures shown, split by the shares given. Leave the "
+                 "procedure blank for 'not modelled' (costed, no 30-day benefit). Shares within a tier must add up "
+                 "to 1. Changes are flagged in every output.")
+        mrows = [dict(list_type=r["list_type"], tier=r["tier"], **{"List type": lt_label[r["list_type"]],
+                                                                  "Tier": r["tier"].capitalize(),
+                                                                  "Counts as": group_label.get(r["group"], "") or T.BLANK,
+                                                                  "Share": r["share"]})
+                 for r in T.mapping_rows(base_cfg)]
+        map_ed = st.data_editor(pd.DataFrame(mrows), key=f"map-{key_sfx}", hide_index=True, width="stretch",
+                                num_rows="dynamic", disabled=["list_type", "tier"],
+                                column_config={"list_type": None, "tier": None,
+                                               "List type": st.column_config.SelectboxColumn(options=[lt_label[k] for k in lt_keys]),
+                                               "Tier": st.column_config.SelectboxColumn(options=[t.capitalize() for t in D.TIERS]),
+                                               "Counts as": st.column_config.SelectboxColumn(options=T.ui_options([""] + list(group_label.values()))),
+                                               "Share": st.column_config.NumberColumn(min_value=0.0, max_value=1.0, step=0.05)})
+
     with st.expander("Clinical assumptions at 30 days (advanced)"):
         st.write("Reductions per case, robotic versus each comparator. 'Share' is the proportion of these patients "
-                 "who would have had that comparator without the robot. Changed values are flagged in every output.")
-        pr_df = pd.DataFrame(E.prior_rows(base_cfg))
+                 "who would have had that comparator without the robot.")
+        pr_df = pd.DataFrame([r for r in E.prior_rows(base_cfg) if r["group"] not in D.NOT_MODELLED])
         pr_df["Without the robot"] = pr_df["comparator"].map(D.COMPARATOR_LABELS)
         pr_df = pr_df[["group", "comparator", "specialty", "Without the robot", "share", "los", "conv", "reop",
                        "comp", "readm", "extra_minutes"]]
@@ -195,16 +321,15 @@ with tab_in:
                                column_config={"share": "Share", "los": "Bed-days saved", "conv": "Conversions avoided",
                                               "reop": "Returns to theatre avoided", "comp": "Complications avoided",
                                               "readm": "Readmissions avoided", "extra_minutes": "Extra minutes",
-                                              "specialty": "Specialty", "group": None, "comparator": None})
-        if proc_set != "single_port":
-            st.caption("For multi-port specialties, the open share sets the split; the laparoscopic share is derived.")
+                                              "specialty": "Procedure", "group": None, "comparator": None})
 
 # ---------------------------------------------------------------------------
-# Assemble overrides and run
+# Assemble the configuration and run
 # ---------------------------------------------------------------------------
-inv = {v: k for k, v in LIST_LABELS.items()}
-group_over = {r["group"]: dict(volume=float(r["Robotic cases per year"]), cases_per_list=float(r["Cases per list"]),
-                               list_sessions=inv[r["List length"]]) for r in vol_ed.to_dict("records")}
+group_over = {r["group"]: dict(volume=float(r["Annual demand"])) for r in vol_ed.to_dict("records")}
+for r in tar_ed.to_dict("records"):
+    if float(r["Extra income per case (£)"] or 0) != base_cfg["groups"][r["group"]].get("tariff_uplift", 0.0):
+        group_over.setdefault(r["group"], {})["tariff_uplift"] = float(r["Extra income per case (£)"] or 0)
 for k, o in E.overrides_from_prior_rows(pr_ed.to_dict("records"), platform).items():
     group_over.setdefault(k, {}).update(o)
 if "prostatectomy" in group_over:
@@ -212,11 +337,25 @@ if "prostatectomy" in group_over:
         group_over["prostatectomy"].update(BC.PROSTATE_ELSEWHERE["prostatectomy"])
     elif group_over["prostatectomy"].get("p_robot_elsewhere", 0) >= 1:
         group_over["prostatectomy"].update(p_open=1.0, p_robot_elsewhere=0.0)
+map_rows = []
+for r in map_ed.to_dict("records"):
+    if not r.get("List type"):
+        continue
+    map_rows.append(dict(list_type=lt_from_label.get(r["List type"], r.get("list_type")),
+                         tier=(r.get("Tier") or r.get("tier") or "major").lower(),
+                         group=group_from_label.get(T._clean(r.get("Counts as")), ""), share=float(r.get("Share") or 0)))
+list_map = T.list_map_from_rows(map_rows, base_cfg["list_map"])
+map_over = {lt: {t: list_map[lt][t] for t in D.TIERS} for lt in list_map
+            if any(list_map[lt][t] != base_cfg["list_map"][lt][t] for t in D.TIERS)}
+if loaded_map:
+    map_over = {**{lt: v for lt, v in loaded_map.items()}, **map_over}
 
 configuration = dict(preset=preset, robots=robots, platform=platform, evidence=evidence,
                      instrument_price=instrument_price, central_capital_per_robot=central,
-                     groups=group_over, platform_overrides=pf_over,
-                     programme=dict(include_capacity_value=capacity_value))
+                     groups=group_over, platform_overrides=pf_over, template=grid_now, template_variant=variant,
+                     list_map=map_over, demand_check=bool(demand_check),
+                     programme=dict(include_capacity_value=capacity_value, max_cases_per_session=int(maxcases),
+                                    realisation_factor=float(realisation) / 100))
 try:
     kw = BC.configure(dict(configuration=configuration))
     res = E.run(E.build_config(**kw))
@@ -247,19 +386,20 @@ with tab_out:
         c[2].metric("Extra cost per bed-day released", gbp(t["cost_per_bed_day_released"]))
         c[3].metric("Extra cost per serious event avoided", gbp(t["cost_per_serious_event_avoided"]))
         st.caption("Each ratio divides the whole five-year extra cost by one consequence; they must not be added. "
-                   "No 30-day cost avoided is deducted.")
+                   "Neither 30-day cost avoided nor tariff income is deducted.")
 
         st.subheader("Five-year cost to the trust")
-        c = st.columns(3)
+        c = st.columns(4)
         c[0].metric("Five-year extra cost (revenue)", gbpm(t["extra_cost"]))
-        c[1].metric("Capital funded by the trust", gbp(res["capital"]["trust_funded"]))
-        c[2].metric("Net present cost to the NHS (economic)", gbpm(res["economic"]["net_present_cost"]))
+        c[1].metric("Less extra tariff income", gbpm(t["tariff_income"]))
+        c[2].metric("Net cash cost to the trust", gbpm(t["net_cash_cost"]))
+        c[3].metric("Capital funded by the trust", gbp(res["capital"]["trust_funded"]))
         fy = pd.DataFrame([{"Year": y["year"], "Cases": f"{y['cases']:,.0f}", "Bed-days released": f"{y['bed_days']:,.0f}",
-                            "Extra cost": gbp(y["extra_cost"]), "30-day cost avoided (not cash)": gbp(y["offsets"]),
-                            "Extra cost less cost avoided": gbp(y["net_cost"])} for y in res["yearly"]])
+                            "Extra cost": gbp(y["extra_cost"]), "Tariff income": gbp(y["tariff_income"]),
+                            "Net cash cost": gbp(y["net_cash_cost"]),
+                            "30-day cost avoided (not cash)": gbp(y["offsets"])} for y in res["yearly"]])
         st.dataframe(fy, width="stretch", hide_index=True)
-        st.caption("Revenue cost includes depreciation and public dividend capital on trust-funded capital, so capital "
-                   "and revenue must not be added. Cost avoided releases capacity, not cash.")
+        st.caption(BC.TARIFF_NOTE + f" Net present cost to the NHS (economic view): {gbpm(res['economic']['net_present_cost'])}.")
         parts = []
         for y in res["yearly"]:
             for key, lab in [("platform_fixed", "Platform"), ("instruments", "Instruments"),
@@ -269,18 +409,16 @@ with tab_out:
                 if y[key]:
                     parts.append(dict(Year=f"Year {y['year']}", Component=lab, Cost=y[key]))
         bars = alt.Chart(pd.DataFrame(parts)).mark_bar().encode(
-            x=alt.X("Year:N", title=None), y=alt.Y("sum(Cost):Q", title="£"), color=alt.Color("Component:N"))
+            x=alt.X("Year:N", title=None), y=alt.Y("sum(Cost):Q", title="£"),
+            color=alt.Color("Component:N", scale=alt.Scale(scheme="blues")))
         line = alt.Chart(pd.DataFrame([dict(Year=f"Year {y['year']}", Avoided=y["offsets"]) for y in res["yearly"]])
-                         ).mark_line(point=True, color="#C00000").encode(x="Year:N", y="Avoided:Q")
+                         ).mark_line(point=True, color="#9B2226").encode(x="Year:N", y="Avoided:Q")
         st.altair_chart(bars + line, width="stretch")
-        st.caption("Bars: extra cost to the trust. Red line: 30-day cost avoided (not cash).")
+        st.caption("Bars: extra cost to the trust. Line: 30-day cost avoided (not cash).")
 
         st.subheader("Break-even")
         be = res["break_even"]
-        (st.success if be["status"] in ("within_capacity", "already") else st.info)(BC.break_even_sentence(be))
-        if be.get("max_cases"):
-            st.caption(f"Searched only up to the maximum deliverable volume of about {be['max_cases']:,.0f} cases a year "
-                       f"(cap {D.PROGRAMME['max_cases_per_robot']:,} per robot, or every session filled).")
+        note(BC.break_even_sentence(be))
 
         st.subheader("Spending guardrails")
         g = pd.DataFrame([dict(Check=x["check"], Result=x["value"], Status=x["status"].capitalize(), Rule=x["rule"])
@@ -288,42 +426,37 @@ with tab_out:
         st.dataframe(g.style.map(lambda v: STATUS_STYLE.get(v, ""), subset=["Status"]), width="stretch",
                      hide_index=True)
 
-        st.subheader("Fortnightly list plan")
+        st.subheader("Theatre template: what it delivers")
         c = st.columns(3)
-        c[0].metric("Sessions booked per fortnight", f"{res['booked_sessions_per_fortnight']:g} of {res['capacity_per_fortnight']}")
+        c[0].metric("Sessions booked per fortnight", f"{res['booked_sessions_per_fortnight']:g} of "
+                    f"{res['capacity_per_fortnight']:g}")
         c[1].metric("Robotic operations scheduled per year", f"{sum(g['planned_cases'] for g in res['groups'].values()):,.0f}")
         c[2].metric("Total unmet demand (cases a year)", f"{res['unmet_cases']:,.0f}")
         if res["unmet_cases"] >= 0.5:
             st.warning(f"{res['unmet_cases']:,.0f} cases a year of the demand entered cannot be scheduled. "
-                       "See the warnings below for each specialty.")
-        st.write(f"{res['booked_sessions_per_fortnight']:g} of {res['capacity_per_fortnight']} sessions booked "
-                 f"({res['booked_utilisation']:.0%}); {res['spare_sessions_per_fortnight']:g} free. Robots needed for full "
-                 f"demand: {res['robots_needed']['fractional']:.2f}. Lists are created only if at least "
-                 f"{D.PROGRAMME['min_list_fill']:.0%} full; smaller demand is pooled on a shared list.")
-        plan_rows = []
-        for k, v in res["plan"].items():
-            if k == E.SHARED:
-                continue
-            go = res["groups"][k]
-            if v or go["shared_cases"] >= 0.5 or go["unmet_cases"] >= 0.5:
-                plan_rows.append({"Specialty": go["label"], "Sessions per fortnight": v,
-                                  "Cases on own lists": round(go["dedicated_cases"]),
-                                  "Cases on shared list": round(go["shared_cases"]), "Unmet demand": round(go["unmet_cases"])})
-        if res["plan"].get(E.SHARED):
-            plan_rows.append({"Specialty": E.shared_label(), "Sessions per fortnight": res["plan"][E.SHARED],
-                              "Cases on own lists": 0,
-                              "Cases on shared list": round(sum(x["shared_cases"] for x in res["groups"].values())),
-                              "Unmet demand": 0})
-        st.dataframe(pd.DataFrame(plan_rows), width="stretch", hide_index=True)
-        for rb in range(1, cfg["robots"] + 1):
-            grid = {}
-            for x in res["grid"]:
-                if x["robot"] == rb:
-                    grid.setdefault(f"Week {x['week']} {x['session']}", {})[x["day"]] = (
-                        E.slot_label(cfg, x["group"]) if x["group"] else "Unbooked")
-            st.write(f"Robot {rb}")
-            st.dataframe(pd.DataFrame(grid).T.reindex(columns=["Mon", "Tue", "Wed", "Thu", "Fri"]).fillna("Maintenance"),
-                         width="stretch")
+                       "See the warnings below for each procedure.")
+        prow = []
+        for k, go in res["groups"].items():
+            if go.get("template_cases", 0) >= 0.5 or go["unmet_cases"] >= 0.5:
+                prow.append({"Procedure": go["label"], "Sessions per fortnight": round(go["sessions_per_fortnight"], 1),
+                             "Cases on template (year)": round(go.get("template_cases", 0)),
+                             "Cases delivered": round(go["planned_cases"]), "Unmet demand": round(go["unmet_cases"])})
+        st.dataframe(pd.DataFrame(prow), width="stretch", hide_index=True)
+        if res["input_mode"] == "template":
+            tints = {k: LT_TINTS[i % len(LT_TINTS)] for i, k in enumerate(cfg["list_map"])}
+            for rb in range(1, cfg["robots"] + 1):
+                cells = [x for x in res["grid"] if x["robot"] == rb]
+                table, colours = {}, {}
+                for x in cells:
+                    r_ = f"Week {x['week']} {x['day']}"
+                    col = D.SESSION_LABELS[x["session"]]
+                    table.setdefault(r_, {})[col] = BC.cell_text(cfg, x)
+                    colours.setdefault(r_, {})[col] = tints.get(x["list_type"], "") if x["status"] == "booked" else ""
+                tdf = pd.DataFrame(table).T[["AM", "PM", "Evening"]]
+                cdf = pd.DataFrame(colours).T[["AM", "PM", "Evening"]]
+                st.markdown(f"**Robot {rb}**")
+                st.dataframe(tdf.style.apply(lambda _: cdf.map(lambda v: f"background-color:{v}" if v else ""),
+                                             axis=None), width="stretch", height=36 * 15)
 
         st.subheader("Instrument price targets (net of 30-day cost avoided)")
         pt = res["price_targets"]
@@ -333,15 +466,14 @@ with tab_out:
                      f"needed for budget neutrality: {gbp(pt['budget_neutral_price']) if pt['budget_neutral_price'] is not None else 'not achievable'}.")
         else:
             st.write(pt["note"])
-
         if res["warnings"]:
             st.subheader("Warnings")
             for w in res["warnings"]:
                 st.warning(w)
         if res["user_modified"]:
             st.subheader("Assumptions changed from defaults")
-            st.dataframe(pd.DataFrame([{"Assumption": E.describe_item(cfg, m["item"]), "Default": f"{m['default']:g}",
-                                        "Used": f"{m['used']:g}"} for m in res["user_modified"]]),
+            st.dataframe(pd.DataFrame([{"Assumption": E.describe_item(cfg, m["item"]), "Default": E.fmt_value(m["default"]),
+                                        "Used": E.fmt_value(m["used"])} for m in res["user_modified"]]),
                          width="stretch", hide_index=True)
         with st.expander("Assumptions register"):
             st.dataframe(pd.DataFrame([{"Assumption": x["parameter"], "Value": x["value"], "Source": x["source"],
@@ -356,7 +488,7 @@ with tab_sens:
         st.error("Fix the input problem first.")
     else:
         cfg = res["config"]
-        st.subheader("One-way sensitivity (tornado)")
+        st.subheader("One-way sensitivity")
         metric = st.selectbox("Result", list(S.METRICS), index=1, format_func=lambda k: S.METRICS[k][0])
         tor = S.tornado(cfg, metric, res)
         if tor["bars"]:
@@ -368,12 +500,13 @@ with tab_sens:
             df = pd.DataFrame(rows)
             order = [b["name"] for b in tor["bars"]]
             chart = alt.Chart(df).mark_bar().encode(
-                y=alt.Y("Assumption:N", sort=order, title=None, axis=alt.Axis(labelLimit=0)), x=alt.X("start:Q", title=tor["metric_label"] + " (£)"),
-                x2="end:Q", color=alt.Color("Level:N", scale=alt.Scale(domain=["Low", "High"], range=["#2E8B8B", "#1F3864"])),
+                y=alt.Y("Assumption:N", sort=order, title=None, axis=alt.Axis(labelLimit=0)),
+                x=alt.X("start:Q", title=tor["metric_label"] + " (£)"), x2="end:Q",
+                color=alt.Color("Level:N", scale=alt.Scale(domain=["Low", "High"], range=["#7FA7C9", "#1F3864"])),
                 tooltip=["Assumption", "Setting", alt.Tooltip("end:Q", format=",.0f")])
-            rule = alt.Chart(pd.DataFrame([{"base": tor["base"]}])).mark_rule(color="grey").encode(x="base:Q")
+            rule = alt.Chart(pd.DataFrame([{"base": tor["base"]}])).mark_rule(color="#6B7280").encode(x="base:Q")
             st.altair_chart((chart + rule).properties(height=36 * len(order) + 40), width="stretch")
-            st.caption(f"Base case {gbp(tor['base'])}. Each assumption is moved on its own; the list plan is held fixed. "
+            st.caption(f"Base case {gbp(tor['base'])}. Each assumption is moved on its own; the template is held fixed. "
                        "Ranges are placeholders for expert review."
                        + (f" No effect on this result: {', '.join(tor['no_effect']).lower()}." if tor["no_effect"] else ""))
         if proc_set != "single_port":
@@ -386,7 +519,8 @@ with tab_sens:
 # Business case
 # ---------------------------------------------------------------------------
 with tab_bc:
-    st.subheader("Cover page")
+    st.subheader("Business case")
+    st.write("The Word business case is the main output: a Five Case Model document built from these inputs.")
     c = st.columns(2)
     cover_defaults = dict(trust_name="[Trust name]", prepared_by="[Name, role]", sro="[Name, role]",
                           clinical_lead="[Name, role]", finance_lead="[Name, role]", version="Draft 0.1",

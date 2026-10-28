@@ -40,7 +40,7 @@ def benchmark_config(trust_cfg=None, spec=None):
     cfg = E.build_config("large_1", b["platform"], (trust_cfg or {}).get("evidence", "central"),
                          overrides={"robots": b["robots"],
                                     "programme": {"central_capital_per_robot": central}},
-                         instrument_price=b["instrument_price"])
+                         instrument_price=b["instrument_price"], template=None)
     if trust_cfg is not None:
         for k, g in trust_cfg["groups"].items():
             if k in cfg["groups"] and not E.is_multi_comparator(g):

@@ -15,7 +15,7 @@ This folder is a complete web application. The website, the calculations and the
 
 3. A browser opens at http://localhost:8501. Choose the configuration in the left panel, check the inputs, read the results, then open the "Business case" tab and press "Generate Word business case" to download the document.
 
-All 477 tests should pass before anything is put online. Package versions are pinned in `requirements.txt`; change them deliberately and re-run the tests.
+All 681 tests should pass before anything is put online. Package versions are pinned in `requirements.txt`; change them deliberately and re-run the tests.
 
 ## 2. Put it online
 
@@ -61,6 +61,8 @@ Give the container to the trust or ICS digital team. Because nothing is stored a
 | `docx_render.py` | Renders that content to Word with python-docx. |
 | `benchmark.py`, `sensitivity.py`, `register.py` | Benchmark programme, tornado analysis, assumptions register. |
 | `charts.py`, `inputs_io.py` | Charts for Word; saving and reloading cases. |
+| `templates.py` | The two-week theatre template (main input). |
+| `.streamlit/config.toml`, `static/` | Theme and favicon. Keep both when deploying. |
 | `show_the_maths.py` | Prints a step-by-step worked example. |
 | `test_engine.py`, `test_app.py` | Test suite: hand-calculated cases, invariants, independent re-calculation, document and app smoke tests. |
 | `.github/workflows/tests.yml` | Runs the tests on every change in GitHub. |

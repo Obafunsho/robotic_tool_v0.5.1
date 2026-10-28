@@ -27,6 +27,7 @@ import docx_render
 import engine as E
 import register as RG
 import sensitivity as S
+import templates as T
 
 HERE = Path(__file__).parent
 DRAFT_STATUS = "Draft: assumptions awaiting specialty review"
@@ -74,9 +75,16 @@ def configure(case):
             ov[k] = copy.deepcopy(c[src])
     for k, v in c.get("programme", {}).items():
         ov["programme"][k] = v
+    if "list_map" in c:
+        ov["list_map"] = copy.deepcopy(c["list_map"])
+    if "demand_check" in c:
+        ov["demand_check"] = bool(c["demand_check"])
+    template = c.get("template") or c.get("template_variant", "standard")
+    if c.get("plan") is not None:
+        template = None
     return dict(preset=c["preset"], platform=c["platform"], evidence=c.get("evidence", "central"),
                 overrides=ov, instrument_price=c.get("instrument_price", "list"),
-                plan=c.get("plan"))
+                plan=c.get("plan"), template=template)
 
 
 def with_changes(base, **changes):
@@ -85,6 +93,10 @@ def with_changes(base, **changes):
     kw = json.loads(json.dumps(base))
     for k, v in changes.items():
         if k == "robots":
+            if kw["overrides"].get("robots") != v and isinstance(kw.get("template"), list):
+                # a custom template is drawn for one robot count: other counts use a
+                # template suggested from demand
+                kw["template"] = "standard"
             kw["overrides"]["robots"] = v
             kw["plan"] = None
         elif k == "central_capital_per_robot":
@@ -140,6 +152,19 @@ def label_for(cfg, key):
     return E.slot_label(cfg, key, short=False)
 
 
+def n_lists_txt(r):
+    if r["input_mode"] == "template":
+        n = len(r["template_summary"]["list_type_sessions"])
+        return plural(n, "list type") + " on the two-week theatre template"
+    n = sum(1 for k, v in r["plan"].items() if v and k != E.SHARED)
+    return plural(n, "specialty").replace("specialtys", "specialties") + (
+        " and a shared list" if r["plan"].get(E.SHARED) else "")
+
+
+def scheduled_groups(r):
+    return [k for k, g in r["groups"].items() if g["planned_cases"] >= 0.5 and k not in D.NOT_MODELLED]
+
+
 # ---------------------------------------------------------------------------
 def build_blocks(case, include_charts=True):
     base = configure(case)
@@ -156,7 +181,7 @@ def build_blocks(case, include_charts=True):
     rec = recommended_robots(base)
     bench = BM.run_benchmark(cfg) if pf.get("procedure_set") != "single_port" else None
     reg = RG.rows(cfg)
-    reg_open = sum(1 for x in reg if x["status"] in ("Placeholder", "Assumption", "Context only", "Partly sourced"))
+    reg_open = sum(1 for x in reg if x["status"] != "Sourced")
     B = []
     add = B.append
     robots_txt = plural(cfg["robots"], "robot")
@@ -184,9 +209,8 @@ def build_blocks(case, include_charts=True):
     add(dict(type="p", text=(
         f"This business case seeks approval for a robot-assisted surgery programme at {trust}: "
         f"{robots_txt} ({pf['label'].split(':')[0]}), operating {r['booked_sessions_per_fortnight']:g} of "
-        f"{r['capacity_per_fortnight']} available sessions per fortnight across "
-        f"{sum(1 for k, v in r['plan'].items() if v and k != E.SHARED)} specialties"
-        f"{' and a shared list' if r['plan'].get(E.SHARED) else ''}.")))
+        f"{r['capacity_per_fortnight']:g} available sessions per fortnight across "
+        f"{n_lists_txt(r)}.")))
     add(dict(type="p", text=(
         "It is presented as an investment in quality, access and capacity, not as a cost-saving proposal. "
         "The case sets out first what the investment buys for patients, then what it costs per outcome, "
@@ -214,12 +238,19 @@ def build_blocks(case, include_charts=True):
          ratio(t["cost_per_serious_event_avoided"])]]))
     add(dict(type="p", text=(
         "Each ratio divides the whole five-year extra cost by one consequence, so they must not be added. "
-        "No 30-day cost avoided is deducted.")))
+        "Neither 30-day cost avoided nor tariff income is deducted, so the ratios measure NHS resources used.")))
     add(dict(type="h3", text="Five-year cost to the trust"))
     hdr = ["£ (thousands)"] + [f"Year {y['year']}" for y in r["yearly"]] + ["Total"]
-    add(dict(type="table", header=hdr, widths=[2626] + [1067] * 5 + [1065], rows=[
-        ["Extra cost to the trust (revenue)"] + [gbpk(y["extra_cost"]) for y in r["yearly"]] + [gbpk(t["extra_cost"])]],
-        bold_last=True))
+    rows5 = [["Extra cost to the trust (revenue)"] + [gbpk(y["extra_cost"]) for y in r["yearly"]]
+             + [gbpk(t["extra_cost"])]]
+    if t["tariff_income"]:
+        rows5 += [["Less extra tariff income"] + [gbpk(-y["tariff_income"]) for y in r["yearly"]]
+                  + [gbpk(-t["tariff_income"])],
+                  ["Net cash cost to the trust"] + [gbpk(y["net_cash_cost"]) for y in r["yearly"]]
+                  + [gbpk(t["net_cash_cost"])]]
+    add(dict(type="table", header=hdr, widths=[2626] + [1067] * 5 + [1065], rows=rows5, bold_last=True))
+    add(dict(type="p", text=TARIFF_NOTE + (
+        "" if t["tariff_income"] else " No extra tariff income has been entered for this case.")))
     cap = r["capital"]
     if pf["model"] == "purchase":
         add(dict(type="p", text=(
@@ -273,13 +304,14 @@ def build_blocks(case, include_charts=True):
         "that provision for recruiting and training surgical first assistants or surgical care practitioners should "
         "be built into the business case. This case is structured to follow that guidance.")))
     add(dict(type="h2", text="2.2 Specialties and priorities"))
-    pri = [cfg["groups"][k]["label"] for k, v in r["plan"].items() if k != E.SHARED and v and cfg["groups"][k]["nhse_priority"]]
-    oth = [cfg["groups"][k]["label"] for k, v in r["plan"].items() if k != E.SHARED and v and not cfg["groups"][k]["nhse_priority"]]
+    sg = scheduled_groups(r)
+    pri = [cfg["groups"][k]["label"] for k in sg if cfg["groups"][k]["nhse_priority"]]
+    oth = [cfg["groups"][k]["label"] for k in sg if not cfg["groups"][k]["nhse_priority"]]
     sh = [g["label"] for k, g in r["groups"].items() if g["shared_cases"] >= 0.5]
     add(dict(type="p", text=(
         "The programme includes specialties that NHS England has signalled as priorities for robotic access: "
-        f"{', '.join(pri) if pri else 'none with a dedicated list in this configuration'}. Other specialties with "
-        f"dedicated lists are {', '.join(oth) if oth else 'none'}."
+        f"{', '.join(pri) if pri else 'none scheduled in this configuration'}. Other procedures scheduled are "
+        f"{', '.join(oth) if oth else 'none'}."
         + (f" A shared list pools the remaining demand from {', '.join(sh)}." if sh else ""))))
     add(dict(type="h2", text="2.3 Objectives"))
     add(dict(type="bullets", items=[
@@ -306,13 +338,24 @@ def build_blocks(case, include_charts=True):
         "applies the 30-day differences to that mix. The headline is the extra cost to the trust with no deduction "
         "for 30-day cost avoided. The economic view (section 3.7) deducts cost avoided and uses discounted cash at "
         "the HM Treasury Green Book rate of 3.5%, with capital in year 0 and residual value credited at year 5. "
-        f"Robotic cases are capped at {pr.get('max_cases_per_robot', 700):,} per robot per year.")))
+        f"Activity above {pr.get('max_cases_per_robot', 700):,} robotic cases per robot per year is flagged as an "
+        "advisory guardrail; it is not cut.")))
+    add(dict(type="p", text=(
+        "Activity comes from a two-week theatre template: each session's list type and its major, medium and "
+        "minor cases are mapped to procedures (Appendix A), counted over the fortnight and extrapolated to a year. "
+        "Where annual demand is entered, delivered cases are limited to demand and any shortfall is reported."
+        if r["input_mode"] == "template" else
+        "Activity comes from annual demand by specialty, planned into whole lists.")))
     add(dict(type="h2", text="3.2 Options appraised"))
     rows = [["Option 0: no robot", "n/a", "0", "0", "£0", "n/a", "£0"]]
+    suggested = False
     for n in (1, 2):
         rn = run_with(base, robots=n)
         yn = rn["yearly"][min(3, H) - 1]
-        rows.append([f"Option {n}: {plural(n, 'robot')}", f"{rn['booked_utilisation']:.0%}", n0(yn["cases"]),
+        star = ""
+        if isinstance(base.get("template"), list) and n != cfg["robots"]:
+            star, suggested = " *", True
+        rows.append([f"Option {n}: {plural(n, 'robot')}{star}", f"{rn['booked_utilisation']:.0%}", n0(yn["cases"]),
                      n0(yn["bed_days"]), gbpm(rn["totals"]["extra_cost"]),
                      ratio(rn["totals"]["cost_per_bed_day_released"]), gbpm(rn["economic"]["net_present_cost"])])
     add(dict(type="table", header=["Option", "Utilisation", "Cases (yr 3)", "Bed-days (yr 3)",
@@ -320,7 +363,9 @@ def build_blocks(case, include_charts=True):
              widths=[1826, 1150, 1050, 1100, 1300, 1300, 1300], rows=rows, small=True))
     add(dict(type="p", text=(
         f"Preferred option: {robots_txt}. Option 0 avoids all programme costs but delivers none of the patient "
-        "consequences above.")))
+        "consequences above."
+        + (" * This option uses a template suggested from demand, because the entered template is drawn for "
+           f"{plural(cfg['robots'], 'robot')}." if suggested else ""))))
     add(dict(type="h2", text="3.3 Platform comparison"))
     if pf.get("procedure_set") == "single_port":
         add(dict(type="p", text=(
@@ -403,9 +448,8 @@ def build_blocks(case, include_charts=True):
     add(dict(type="h2", text="3.6 Break-even"))
     be = r["break_even"]
     add(dict(type="p", text=break_even_sentence(be) + (
-        " The search is limited to the volume the programme could actually deliver: the lower of the cap of "
-        f"{pr.get('max_cases_per_robot', 700):,} cases per robot and every session filled at the planned cases per "
-        "session.")))
+        " The search is limited to the volume the programme could actually deliver: every available session filled "
+        "at the planned cases per session.")))
     if be.get("max_cases"):
         add(dict(type="table", header=["Measure (steady state, per year)", "Value"], widths=[6500, 2526], rows=[
             ["Planned robotic cases", n0(be["planned_cases"])],
@@ -512,6 +556,12 @@ def build_blocks(case, include_charts=True):
              line("Theatre works", lambda y: y["theatre_modification"]),
              line("Extra cost to the trust", lambda y: y["extra_cost"])]
     add(dict(type="table", header=hdr, widths=[2626] + [1067] * 5 + [1065], rows=rows, bold_last=True))
+    if t["tariff_income"]:
+        add(dict(type="table", header=["Cash case"] + hdr[1:], widths=[2626] + [1067] * 5 + [1065], rows=[
+            line("Extra cost to the trust", lambda y: y["extra_cost"]),
+            line("Less extra tariff income", lambda y: -y["tariff_income"]),
+            line("Net cash cost to the trust", lambda y: y["net_cash_cost"])], bold_last=True))
+    add(dict(type="p", text=TARIFF_NOTE))
     add(dict(type="table", header=["For information (not cash)"] + hdr[1:], widths=[2626] + [1067] * 5 + [1065], rows=[
         line("30-day cost avoided", lambda y: y["offsets"]),
         line("Extra cost less cost avoided", lambda y: y["net_cost"])], small=True))
@@ -527,45 +577,10 @@ def build_blocks(case, include_charts=True):
 
     # 6 Management case -----------------------------------------------------------------
     add(dict(type="h1", text="6. Management case"))
-    add(dict(type="h2", text="6.1 Fortnightly list plan"))
-    thr = pr.get("min_list_fill", 0.75)
-    add(dict(type="p", text=(
-        f"Capacity is {r['capacity_per_fortnight']} sessions per fortnight ({pr['sessions_per_robot_per_week']} per "
-        f"robot per week, one weekly slot kept for maintenance); {r['booked_sessions_per_fortnight']:g} are booked "
-        f"and {r['spare_sessions_per_fortnight']:g} left free. A dedicated list is created only if it would be at "
-        f"least {thr:.0%} full; smaller remaining demand is pooled on a shared list, again only if that list would "
-        f"be at least {thr:.0%} full.")))
-    prow = []
-    for k, v in r["plan"].items():
-        if k == E.SHARED or not (v or r["groups"][k]["shared_cases"] >= 0.5):
-            continue
-        g = cfg["groups"][k]
-        go = r["groups"][k]
-        prow.append([g["label"], str(v), f"{g['cases_per_list']:g} per {'all-day' if g['list_sessions'] == 2 else 'half-day'} list",
-                     n0(go["dedicated_cases"]), n0(go["shared_cases"]), n0(go["unmet_cases"])])
-    if r["plan"].get(E.SHARED):
-        fill = r["shared"]["shared_fill"]
-        prow.append([E.shared_label(), str(r["plan"][E.SHARED]), f"half-day, {fill:.0%} full", "",
-                     n0(sum(g["shared_cases"] for g in r["groups"].values())), ""])
-    add(dict(type="table", header=["Specialty", "Sessions per fortnight", "List", "Cases on own lists",
-                                   "Cases on shared list", "Unmet demand"],
-             widths=[3000, 1200, 1700, 1100, 1100, 926], rows=prow))
-    if r["unmet_cases"] >= 0.5:
-        add(dict(type="p", text=f"Total unmet demand: {n0(r['unmet_cases'])} cases a year (see warnings in Appendix C)."))
-    days = ["Mon", "Tue", "Wed", "Thu", "Fri"]
-    for rb in range(1, cfg["robots"] + 1):
-        grid_rows = []
-        for w in (1, 2):
-            for s in ("AM", "PM"):
-                row = [f"Week {w} {s}"]
-                for d in days:
-                    cell = next((x for x in r["grid"] if x["robot"] == rb and x["week"] == w
-                                 and x["day"] == d and x["session"] == s), None)
-                    row.append("Maintenance" if cell is None else
-                               (E.slot_label(cfg, cell["group"]) if cell["group"] else "Unbooked"))
-                grid_rows.append(row)
-        add(dict(type="h3", text=f"Robot {rb}: two-week rota"))
-        add(dict(type="table", header=[""] + days, widths=[1426] + [1520] * 5, rows=grid_rows, small=True))
+    if r["input_mode"] == "template":
+        B.extend(template_blocks(r))
+    else:
+        B.extend(legacy_plan_blocks(r))
     add(dict(type="h2", text="6.2 Governance, workforce and training"))
     add(dict(type="bullets", items=[
         "[Name the robotic steering committee, its executive chair and reporting line.] The committee approves "
@@ -622,6 +637,25 @@ def build_blocks(case, include_charts=True):
              rows=[[g["label"], g["p_open_rationale"],
                     g.get("evidence_note") or D.EVIDENCE_NOTES.get(k, D.DEFAULT_EVIDENCE_NOTE)]
                    for k, g in cfg["groups"].items() if g["volume"]], small=True))
+    add(dict(type="h3", text="How the theatre template maps to procedures"))
+    add(dict(type="p", text=(
+        "Each session on the template has a list type and a number of major, medium and minor cases. The table "
+        "shows which procedure each tier counts as, and the split where a tier covers several procedures. "
+        "'Not modelled' cases are costed but carry no 30-day benefit. Changes from the defaults are listed in "
+        "Appendix C.")))
+    mrows = []
+    for lt, spec in cfg["list_map"].items():
+        for tier in D.TIERS:
+            if spec.get(tier):
+                mrows.append([spec["label"], tier.capitalize(), T.describe_split(cfg, spec[tier])])
+    mrows.append(["Any other list type or tier", "", "Not modelled"])
+    add(dict(type="table", header=["List type", "Tier", "Counts as"], widths=[2600, 1200, 5226], rows=mrows,
+             small=True))
+    add(dict(type="h3", text="Tariff: extra income per robotic case (cash case only)"))
+    add(dict(type="table", header=["Procedure", "Extra income per case", "Source"], widths=[3000, 1600, 4426],
+             rows=[[g["label"], gbp(g.get("tariff_uplift", 0.0)),
+                    D.TARIFF_SOURCES.get(k, D.DEFAULT_TARIFF_SOURCE)]
+                   for k, g in cfg["groups"].items() if g["volume"] or g.get("tariff_uplift")], small=True))
     add(dict(type="h1", text="Appendix B. Unit costs and programme settings"))
     uc = cfg["unit_costs"]
     add(dict(type="table", header=["Input", "Value", "Note"], widths=[3400, 1600, 4026], rows=[
@@ -638,8 +672,12 @@ def build_blocks(case, include_charts=True):
         ["Implementation, training and proctoring per robot", gbp(pr["implementation_cost_per_robot"]), "One-off, year 1. Placeholder."],
         ["Operating weeks per year", str(pr["operating_weeks_per_year"]), ""],
         ["Sessions per robot per week", str(pr["sessions_per_robot_per_week"]), "One slot kept for maintenance."],
-        ["Maximum cases per robot per year", f"{pr.get('max_cases_per_robot', 700):,}", "Hard cap on inputs and break-even."],
-        ["Minimum list fill", f"{pr.get('min_list_fill', 0.75):.0%}", "A list is created only if at least this full."],
+        ["Cases per robot per year: advisory level", f"{pr.get('max_cases_per_robot', 700):,}",
+         "Amber guardrail above this level; activity is not cut."],
+        ["Minimum list fill", f"{pr.get('min_list_fill', 0.75):.0%}", "Lists below this fill are flagged."],
+        ["Maximum cases per session", str(pr.get("max_cases_per_session", 3)), "Template entries above this are flagged."],
+        ["Share of templated cases that go ahead", f"{pr.get('realisation_factor', 1.0):.0%}",
+         "Allows for cancellations. Placeholder."],
         ["Discount rate", f"{pr['discount_rate']:.1%}", "HM Treasury Green Book."],
         ["Public dividend capital", f"{pr['pdc_rate']:.1%}", "On average net book value."]], small=True))
     add(dict(type="p", text=(
@@ -651,7 +689,7 @@ def build_blocks(case, include_charts=True):
         "hand-calculated cases and an independent re-calculation of all cost avoided.")))
     if r["user_modified"]:
         add(dict(type="table", header=["Assumption changed", "Default", "Used"], widths=[5400, 1800, 1826],
-                 rows=[[E.describe_item(cfg, m["item"]), f"{m['default']:g}", f"{m['used']:g}"]
+                 rows=[[E.describe_item(cfg, m["item"]), E.fmt_value(m["default"]), E.fmt_value(m["used"])]
                        for m in r["user_modified"]], small=True))
     else:
         add(dict(type="p", text="No clinical assumptions or unit costs were changed from the defaults."))
@@ -703,6 +741,115 @@ def main(case_path, out_path):
     data, _ = build_docx_bytes(case)
     Path(out_path).write_bytes(data)
     print(f"Written {out_path}")
+
+
+
+TARIFF_NOTE = (
+    "Tariff: the income line counts only the difference over what the trust would earn for the same patients "
+    "without the robot, entered per procedure, and assumes those patients would otherwise be treated at this "
+    "trust. It appears in the trust's cash case only. It is a transfer within the NHS, so it is excluded from the "
+    "economic view (net present cost) and from the cost per outcome.")
+
+
+def template_blocks(r):
+    cfg = r["config"]
+    pr = cfg["programme"]
+    ts = r["template_summary"]
+    out = [dict(type="h2", text="6.1 Two-week theatre template")]
+    variant = {"standard": "pre-filled from demand, standard day", "extended": "pre-filled from demand, extended day",
+               "custom": "entered by the trust"}.get(cfg.get("template_variant"), "entered by the trust")
+    out.append(dict(type="p", text=(
+        f"The template ({variant}) covers 14 days, Monday to Sunday twice, with AM, PM and evening sessions on each "
+        f"robot. Standard hours are weekday AM and PM, with Friday PM kept for maintenance; evening and weekend "
+        f"sessions count only when used. {ts['booked']} of {ts['available']} available sessions per fortnight are "
+        f"booked ({r['booked_utilisation']:.0%}). The fortnight is extrapolated to {pr['operating_weeks_per_year']} "
+        f"operating weeks a year, and {pr.get('realisation_factor', 1.0):.0%} of templated cases are assumed to go "
+        "ahead.")))
+    rows = []
+    for k, g in r["groups"].items():
+        if g.get("template_cases", 0) < 0.5 and g["unmet_cases"] < 0.5:
+            continue
+        rows.append([g["label"], f"{g['sessions_per_fortnight']:.1f}", n0(g.get("template_cases", 0)),
+                     n0(g["ceiling"]) if cfg.get("demand_check", True) and k not in D.NOT_MODELLED else "not checked",
+                     n0(g["planned_cases"]), n0(g["unmet_cases"])])
+    out.append(dict(type="table", header=["Procedure", "Sessions per fortnight", "Cases on template (year)",
+                                          "Demand (year)", "Cases delivered", "Unmet demand"],
+                    widths=[3100, 1100, 1300, 1200, 1200, 1126], rows=rows, small=True))
+    out.append(dict(type="p", text=(f"Total unmet demand: {n0(r['unmet_cases'])} cases a year."
+                                    if r["unmet_cases"] >= 0.5 else "All demand entered is scheduled.")))
+    for rb in range(1, cfg["robots"] + 1):
+        grid_rows = []
+        for w in (1, 2):
+            for d in D.DAYS:
+                row = [f"Week {w} {d}"]
+                for sname in D.SESSIONS:
+                    cell = next(x for x in ts["cells"] if x["robot"] == rb and x["week"] == w
+                                and x["day"] == d and x["session"] == sname)
+                    row.append(cell_text(cfg, cell))
+                if d in ("Sat", "Sun") and all(x == "" for x in row[1:]):
+                    continue
+                grid_rows.append(row)
+        out.append(dict(type="h3", text=f"Robot {rb}: two-week template"))
+        out.append(dict(type="table", header=["", "AM", "PM", "Evening"], widths=[1526, 2500, 2500, 2500],
+                        rows=grid_rows, small=True))
+    out.append(dict(type="p", text="Saturdays and Sundays are shown only where a session is in use."))
+    return out
+
+
+def cell_text(cfg, cell):
+    if cell["status"] == "booked":
+        lt = T.label_of(cfg, cell["list_type"]) if cell["list_type"] else ""
+        return f"{lt}: {cell['entry'].lower() if cell['entry'] == 'Continuing' else cell['entry']}".strip(": ")
+    if cell["status"] == "open":
+        return "Unbooked"
+    if cell["status"] in ("closed", "maintenance"):
+        return cell["status"].capitalize()
+    return ""
+
+
+def legacy_plan_blocks(r):
+    cfg = r["config"]
+    pr = cfg["programme"]
+    thr = pr.get("min_list_fill", 0.75)
+    out = [dict(type="h2", text="6.1 Fortnightly list plan")]
+    out.append(dict(type="p", text=(
+        f"Capacity is {r['capacity_per_fortnight']} sessions per fortnight ({pr['sessions_per_robot_per_week']} per "
+        f"robot per week, one weekly slot kept for maintenance); {r['booked_sessions_per_fortnight']:g} are booked "
+        f"and {r['spare_sessions_per_fortnight']:g} left free. A dedicated list is created only if it would be at "
+        f"least {thr:.0%} full; smaller remaining demand is pooled on a shared list, again only if that list would "
+        f"be at least {thr:.0%} full.")))
+    prow = []
+    for k, v in r["plan"].items():
+        if k == E.SHARED or not (v or r["groups"][k]["shared_cases"] >= 0.5):
+            continue
+        g = cfg["groups"][k]
+        go = r["groups"][k]
+        prow.append([g["label"], str(v), f"{g['cases_per_list']:g} per {'all-day' if g['list_sessions'] == 2 else 'half-day'} list",
+                     n0(go["dedicated_cases"]), n0(go["shared_cases"]), n0(go["unmet_cases"])])
+    if r["plan"].get(E.SHARED):
+        fill = r["shared"]["shared_fill"]
+        prow.append([E.shared_label(), str(r["plan"][E.SHARED]), f"half-day, {fill:.0%} full", "",
+                     n0(sum(g["shared_cases"] for g in r["groups"].values())), ""])
+    out.append(dict(type="table", header=["Specialty", "Sessions per fortnight", "List", "Cases on own lists",
+                                          "Cases on shared list", "Unmet demand"],
+                    widths=[3000, 1200, 1700, 1100, 1100, 926], rows=prow))
+    out.append(dict(type="p", text=(f"Total unmet demand: {n0(r['unmet_cases'])} cases a year."
+                                    if r["unmet_cases"] >= 0.5 else "All demand entered is scheduled.")))
+    days = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+    for rb in range(1, cfg["robots"] + 1):
+        grid_rows = []
+        for w in (1, 2):
+            for sname in ("AM", "PM"):
+                row = [f"Week {w} {sname}"]
+                for d in days:
+                    cell = next((x for x in r["grid"] if x["robot"] == rb and x["week"] == w
+                                 and x["day"] == d and x["session"] == sname), None)
+                    row.append("Maintenance" if cell is None else
+                               (E.slot_label(cfg, cell["group"]) if cell["group"] else "Unbooked"))
+                grid_rows.append(row)
+        out.append(dict(type="h3", text=f"Robot {rb}: two-week rota"))
+        out.append(dict(type="table", header=[""] + days, widths=[1426] + [1520] * 5, rows=grid_rows, small=True))
+    return out
 
 
 if __name__ == "__main__":

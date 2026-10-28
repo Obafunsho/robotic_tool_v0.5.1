@@ -28,8 +28,14 @@ import engine as E
 import inputs_io as IO
 import register as RG
 import sensitivity as S
+import templates as T
 
 EX = Path(__file__).parent / "examples"
+
+
+def legacy(preset="medium_dgh_1", platform="platform_b", evidence="central", **kw):
+    """v0.5 demand-led planner (no theatre template)."""
+    return E.build_config(preset, platform, evidence, template=None, **kw)
 
 
 # ---------------------------------------------------------------------------
@@ -135,14 +141,24 @@ ALL = list(itertools.product(D.PRESETS, MP_PLATFORMS, D.EVIDENCE_SETTINGS))
 
 
 @pytest.mark.parametrize("preset,platform,evidence", ALL)
-def test_plan_within_capacity_ceiling_and_cap(preset, platform, evidence):
+def test_template_within_capacity_demand_and_cap(preset, platform, evidence):
     r = E.run(E.build_config(preset, platform, evidence))
+    assert r["input_mode"] == "template"
+    assert r["booked_sessions_per_fortnight"] <= r["capacity_per_fortnight"]
+    for k, g in r["groups"].items():
+        if k not in D.NOT_MODELLED:
+            assert g["planned_cases"] <= r["config"]["groups"][k]["volume"] + 1e-6
+    assert sum(1 for c in r["grid"] if c["status"] == "booked") == r["booked_sessions_per_fortnight"]
+
+
+@pytest.mark.parametrize("preset,platform,evidence", ALL)
+def test_plan_within_capacity_ceiling_and_cap(preset, platform, evidence):
+    r = E.run(legacy(preset, platform, evidence))
     assert r["booked_sessions_per_fortnight"] <= r["capacity_per_fortnight"]
     for g in r["groups"].values():
         assert g["planned_cases"] <= g["ceiling"] + 1e-6
     filled = sum(1 for s in r["grid"] if s["group"])
     assert filled == r["booked_sessions_per_fortnight"]
-    assert r["cases_per_robot"] <= D.PROGRAMME["max_cases_per_robot"] + 1e-6
 
 
 @pytest.mark.parametrize("preset,platform,evidence", ALL)
@@ -181,6 +197,8 @@ def test_consequences_are_linear_in_cases():
 def test_zero_volume_leaves_only_fixed_costs():
     zero = {k: {"volume": 0} for k in D.PROCEDURE_GROUPS}
     r = E.run(E.build_config(overrides={"groups": zero}))
+    assert r["yearly"][2]["cases"] == 0     # template capped at zero demand
+    r = E.run(legacy(overrides={"groups": zero}))
     y = r["yearly"][2]
     assert y["cases"] == 0 and y["offsets"] == 0 and y["instruments"] == 0
     assert y["extra_cost"] == pytest.approx(y["platform_fixed"] + y["staffing"])
@@ -253,13 +271,13 @@ def test_price_targets_reproduce_target():
     for key, target in [("budget_neutral_price", 0.0),
                         ("price_for_target", pt["target_net_cost_per_bed_day"] * r["yearly"][2]["bed_days"])]:
         if pt[key] is not None:
-            r2 = E.run(E.build_config(overrides=ov, instrument_price=pt[key], plan=r["plan"]))
+            r2 = E.run(E.build_config(overrides=ov, instrument_price=pt[key], template=r["config"]["template"]))
             assert r2["yearly"][2]["net_cost"] == pytest.approx(target, abs=1e-6)
 
 
 def test_guardrails_present_and_valid():
     g = E.run(E.build_config())["guardrails"]
-    assert len(g) == 7 and all(x["status"] in ("green", "amber", "red") for x in g)
+    assert len(g) == 8 and all(x["status"] in ("green", "amber", "red") for x in g)
 
 
 def test_capacity_value_toggle():
@@ -319,7 +337,7 @@ def naive_delivered(cfg, plan):
 
 @pytest.mark.parametrize("preset", D.PRESETS)
 def test_independent_delivered_cases(preset):
-    cfg = E.build_config(preset)
+    cfg = legacy(preset)
     r = E.run(cfg)
     nd = naive_delivered(cfg, r["plan"])
     for k in cfg["groups"]:
@@ -332,7 +350,7 @@ def test_independent_delivered_cases(preset):
 @pytest.mark.parametrize("preset", D.PRESETS)
 @pytest.mark.parametrize("rule", ["proportional", "benefit"])
 def test_every_automatic_list_is_at_least_75_percent_full(preset, rule):
-    cfg = E.build_config(preset)
+    cfg = legacy(preset)
     plan = E.auto_plan(cfg, rule)
     thr = cfg["programme"]["min_list_fill"]
     for k, g in cfg["groups"].items():
@@ -350,7 +368,7 @@ def test_every_automatic_list_is_at_least_75_percent_full(preset, rule):
 
 @pytest.mark.parametrize("preset", D.PRESETS)
 def test_spare_sessions_only_when_another_list_would_be_underfilled(preset):
-    cfg = E.build_config(preset)
+    cfg = legacy(preset)
     plan = E.auto_plan(cfg)
     spare = E.capacity_per_fortnight(cfg) - sum(plan.values())
     need = sum(E.shared_need(cfg, plan).values())
@@ -361,7 +379,8 @@ def test_spare_sessions_only_when_another_list_would_be_underfilled(preset):
 def test_medium_dgh_regression_from_v04_review():
     # v0.4 left 3 sessions empty, about 10 hysterectomy patients unallocated, and created
     # colorectal and nephrectomy lists it then flagged as unfillable.
-    r = E.run(E.build_config("medium_dgh_1"))
+    # (v0.5 demand placeholders restored in v0.6.1, so the v0.5 plan is reproduced exactly)
+    r = E.run(legacy("medium_dgh_1"))
     assert r["groups"]["hysterectomy"]["unmet_cases"] == pytest.approx(0, abs=0.5)
     assert r["unmet_cases"] == pytest.approx(0, abs=0.5)
     assert not any("only" in w and "full" in w for w in r["warnings"])
@@ -369,10 +388,19 @@ def test_medium_dgh_regression_from_v04_review():
     assert r["shared"]["shared_fill"] == pytest.approx(4.0381 / 5, rel=1e-3)
 
 
+def test_unmet_demand_warns_even_when_specialty_has_lists_template():
+    r = E.run(E.build_config(overrides={"groups": {"colorectal": {"volume": 20000}}}))
+    g = r["groups"]["colorectal"]
+    assert g["template_cases"] > 0 and g["unmet_cases"] > 19_000
+    w = [x for x in r["warnings"] if x.startswith("Colorectal major resection")]
+    assert len(w) == 1 and f"{g['unmet_cases']:,.0f} cases a year are not scheduled" in w[0]
+    assert "the template does not schedule enough cases" in w[0]
+
+
 def test_unmet_demand_warns_even_when_specialty_has_lists():
     # v0.5.0 only warned for specialties with no lists: colorectal at 20,000 left about
     # 19,700 cases unscheduled with no warning.
-    r = E.run(E.build_config(overrides={"groups": {"colorectal": {"volume": 20000}}}))
+    r = E.run(legacy(overrides={"groups": {"colorectal": {"volume": 20000}}}))
     g = r["groups"]["colorectal"]
     assert r["plan"]["colorectal"] > 0 and g["unmet_cases"] > 19_000
     w = [x for x in r["warnings"] if x.startswith("Colorectal major resection")]
@@ -383,19 +411,20 @@ def test_unmet_demand_warns_even_when_specialty_has_lists():
 
 @pytest.mark.parametrize("preset", D.PRESETS)
 @pytest.mark.parametrize("platform", ["platform_b", "platform_d"])
-def test_every_group_with_unmet_demand_has_one_warning(preset, platform):
-    r = E.run(E.build_config(preset, platform))
+@pytest.mark.parametrize("template", ["standard", "extended", None])
+def test_every_group_with_unmet_demand_has_one_warning(preset, platform, template):
+    r = E.run(E.build_config(preset, platform, template=template))
     for k, g in r["groups"].items():
         hits = [w for w in r["warnings"] if w.startswith(g["label"] + ":") and "not scheduled" in w]
         assert len(hits) == (1 if g["unmet_cases"] >= 0.5 else 0), (g["label"], hits)
 
 
-def test_unmet_demand_reason_is_the_cap_when_cap_binds():
+def test_unmet_demand_reason_when_robot_is_full():
     zero = {k: {"volume": 0} for k in D.PROCEDURE_GROUPS}
     zero["adnexal"] = {"volume": 2000}
-    r = E.run(E.build_config(overrides={"groups": zero}))
+    r = E.run(legacy(overrides={"groups": zero}))
     w = next(x for x in r["warnings"] if x.startswith("Adnexal surgery"))
-    assert "1,300 cases a year are not scheduled" in w and "cap of 700" in w
+    assert "785 cases a year are not scheduled" in w and "fully booked" in w and "cap of" not in w
 
 
 def test_total_unmet_demand_in_business_case():
@@ -414,12 +443,12 @@ def test_shared_sessions_rule():
 
 
 def test_demand_above_capacity_fills_robot():
-    cfg = E.build_config("large_1")
+    cfg = legacy("large_1")
     assert sum(E.auto_plan(cfg).values()) == E.capacity_per_fortnight(cfg)
 
 
 def test_grid_keeps_all_day_lists_together_and_places_shared():
-    r = E.run(E.build_config("large_2"))
+    r = E.run(legacy("large_2"))
     by_day = {}
     for s in r["grid"]:
         if s["group"] and s["group"] != E.SHARED and r["config"]["groups"][s["group"]]["list_sessions"] == 2:
@@ -431,13 +460,18 @@ def test_grid_keeps_all_day_lists_together_and_places_shared():
 # ---------------------------------------------------------------------------
 # E. Volume cap and break-even
 # ---------------------------------------------------------------------------
-def test_cap_700_cases_per_robot():
-    # 3 adnexal cases per half-day list on every session: 18 x 22.5 x 3 = 1,215 > 700
+def test_700_per_robot_is_advisory_not_a_cut():
+    # v0.6.1: 3 adnexal cases per half-day list on every session = 18 x 22.5 x 3 = 1,215 a year,
+    # above 700: flagged amber, not cut
     zero = {k: {"volume": 0} for k in D.PROCEDURE_GROUPS}
     zero["adnexal"] = {"volume": 2000}
-    r = E.run(E.build_config(overrides={"groups": zero}))
-    assert r["yearly"][2]["cases"] == pytest.approx(700)
-    assert any("exceeds the cap" in w for w in r["warnings"])
+    r = E.run(legacy(overrides={"groups": zero}))
+    assert r["yearly"][2]["cases"] == pytest.approx(1215)
+    assert any("above 700 cases per robot (advisory)" in w for w in r["warnings"])
+    g = next(x for x in r["guardrails"] if x["check"] == "Robotic cases per robot per year")
+    assert g["status"] == "amber" and g["value"] == "1,215"
+    ok = next(x for x in E.run(E.build_config())["guardrails"] if x["check"] == "Robotic cases per robot per year")
+    assert ok["status"] == "green"
 
 
 def test_break_even_within_capacity():
@@ -452,12 +486,14 @@ def test_break_even_within_capacity():
 
 
 def test_break_even_beyond_capacity_is_not_reported_as_a_number():
-    cfg = toy_cfg(max_cases_per_robot=120)
-    cfg["unit_costs"]["bed_day"] = 2000
+    # bed-day 1,000: cost avoided per case 1.5 x 1000 + 200 = 1,700; margin 600; break-even 500 cases,
+    # beyond the 400 the sessions allow (100 cases on 5 of 20 sessions)
+    cfg = toy_cfg()
+    cfg["unit_costs"]["bed_day"] = 1000
     be = E.run(cfg)["break_even"]
     assert be["status"] == "beyond_capacity" and be["break_even_cases"] is None
-    assert be["max_cases"] == pytest.approx(120)
-    assert be["net_cost_at_max"] == pytest.approx(300_000 - 120 * 2_100)
+    assert be["max_cases"] == pytest.approx(400)
+    assert be["net_cost_at_max"] == pytest.approx(300_000 - 400 * 600)
 
 
 def test_toy_no_break_even():
@@ -518,7 +554,8 @@ def test_robot_elsewhere_has_no_30_day_difference():
 
 def test_prostatectomy_scenario_cuts_benefits_not_costs():
     base = E.run(E.build_config("large_1"))
-    sc = E.run(E.build_config("large_1", plan=base["plan"], overrides={"groups": BC.PROSTATE_ELSEWHERE}))
+    sc = E.run(E.build_config("large_1", template=base["config"]["template"],
+                              overrides={"groups": BC.PROSTATE_ELSEWHERE}))
     assert sc["totals"]["bed_days"] < base["totals"]["bed_days"]
     assert sc["totals"]["open_avoided"] < base["totals"]["open_avoided"]
     assert sc["totals"]["extra_cost"] == pytest.approx(base["totals"]["extra_cost"])
@@ -609,7 +646,7 @@ def test_tornado_one_way_matches_direct_run():
     cfg = E.build_config()
     r = E.run(cfg)
     bar = next(b for b in S.tornado(cfg, "extra_cost", r)["bars"] if b["name"] == "Cost per theatre minute")
-    c2 = E.build_config(plan=r["plan"], overrides={"unit_costs": {"theatre_minute": 20}})
+    c2 = E.build_config(template=cfg["template"], overrides={"unit_costs": {"theatre_minute": 20}})
     assert bar["high"] == pytest.approx(E.run(c2)["totals"]["extra_cost"])
 
 
@@ -617,9 +654,7 @@ def test_tornado_one_way_matches_direct_run():
                                              ("large_2", "platform_c")])
 def test_register_complete(preset, platform):
     rows = RG.rows(E.build_config(preset, platform))
-    assert rows and all(r["source"] and r["status"] in
-                        ("Sourced", "Partly sourced", "Context only", "Placeholder", "Assumption", "Trust input")
-                        for r in rows)
+    assert rows and all(r["source"] and r["status"] in RG.STATUSES for r in rows)
     assert not any(r["status"] == "Reviewed" for r in rows)
 
 
@@ -765,3 +800,397 @@ def test_single_port_shares_must_sum_to_one():
 def test_single_port_exploratory_guardrail():
     g = {x["check"]: x for x in E.run(E.build_config("large_1", "platform_d"))["guardrails"]}
     assert g["Platform evidence base"]["status"] == "amber"
+
+
+# ---------------------------------------------------------------------------
+# J. Two-week theatre template (v0.6)
+# ---------------------------------------------------------------------------
+def grid_with(cells, robots=1):
+    """Build a grid from {(robot, week, day, session): (list type, entry)}."""
+    g = T.empty_grid(robots)
+    for (rb, w, d, s), (lt, entry) in cells.items():
+        row = next(x for x in g[rb - 1] if x["week"] == w and x["day"] == d)
+        row[f"{s}_list"], row[f"{s}_cases"] = lt, entry
+    return g
+
+
+def tcfg(grid, demand_check=False, **kw):
+    ov = dict(kw.pop("overrides", {}), demand_check=demand_check)
+    return E.build_config("large_1", template=grid, overrides=ov, **kw)
+
+
+HAND = {(1, 1, "Mon", "AM"): ("colorectal", "1 major"),
+        (1, 1, "Mon", "PM"): ("colorectal", "Continuing"),
+        (1, 1, "Tue", "AM"): ("gynaecology", "2 major"),
+        (1, 1, "Tue", "PM"): ("gynaecology", "1 major + 1 minor"),
+        (1, 1, "Wed", "AM"): ("", "Closed"),
+        (1, 1, "Sat", "AM"): ("urology_prostate", "2 medium")}
+
+
+def test_case_options():
+    o3 = T.case_options(3)
+    combos = [x for x in o3 if x not in D.SPECIAL_ENTRIES]
+    assert len(combos) == 19 and "1 major + 1 medium + 1 minor" in combos and "3 minor" in combos
+    assert all(sum(T.parse_cases(c)[1].values()) <= 3 for c in combos)
+    assert len([x for x in T.case_options(4) if x not in D.SPECIAL_ENTRIES]) == 34
+    assert T.parse_cases("2 major + 1 minor") == ("combo", {"major": 2, "medium": 0, "minor": 1})
+    assert T.parse_cases("two major")[0] == "invalid" and T.parse_cases("Continuing") == ("special", "Continuing")
+
+
+def test_template_hand_calculation():
+    # booked: Mon AM, Mon PM (continuing), Tue AM, Tue PM, Sat AM = 5
+    # available: 20 weekday AM/PM - 2 Friday PM maintenance - 1 closed + 1 Saturday booked = 18
+    # cases per fortnight (7): colorectal 1; gynaecology majors 3 -> hysterectomy 1.2, endometriosis 1.5,
+    # myomectomy 0.3; adnexal 1; prostatectomy 2
+    cfg = tcfg(grid_with(HAND))
+    ts = T.summarise(cfg)
+    assert ts["booked"] == 5 and ts["available"] == 18 and ts["issues"] == []
+    c = ts["cases_per_fortnight"]
+    for k, v in dict(colorectal=1, hysterectomy=1.2, endometriosis=1.5, myomectomy=0.3, adnexal=1,
+                     prostatectomy=2).items():
+        assert c[k] == pytest.approx(v)
+    r = E.run(cfg)
+    assert r["booked_utilisation"] == pytest.approx(5 / 18)
+    assert r["groups"]["prostatectomy"]["planned_cases"] == pytest.approx(2 * 22.5)
+    assert r["yearly"][2]["cases"] == pytest.approx(7 * 22.5)     # 1 + 3 + 1 + 2 cases per fortnight
+    assert r["groups"]["colorectal"]["sessions_per_fortnight"] == pytest.approx(2)   # AM plus continuing
+
+
+def test_template_evenings_and_weekends_count_only_when_used():
+    base = T.summarise(tcfg(T.empty_grid(1)))
+    assert base["booked"] == 0 and base["available"] == 18
+    g = grid_with({(1, 1, "Mon", "Eve"): ("", "Empty"), (1, 2, "Sun", "PM"): ("colorectal", "1 major")})
+    ts = T.summarise(tcfg(g))
+    assert ts["available"] == 20 and ts["booked"] == 1
+
+
+def test_template_validation_messages():
+    g = grid_with({(1, 1, "Mon", "AM"): ("colorectal", "Continuing"),
+                   (1, 1, "Tue", "AM"): ("", "1 major"),
+                   (1, 1, "Wed", "AM"): ("colorectal", ""),
+                   (1, 1, "Thu", "AM"): ("gynaecology", "3 major + 1 minor")})
+    issues = " ".join(T.summarise(tcfg(g))["issues"])
+    assert "'Continuing' must follow a booked session" in issues
+    assert "cases entered without a list type" in issues
+    assert "list type chosen but no cases" in issues
+    assert "exceeds the session maximum of 3" in issues
+    r = E.run(tcfg(g))
+    assert sum(1 for w in r["warnings"] if w.startswith("Template:")) == 4
+
+
+def test_max_cases_per_session_is_adjustable():
+    g = grid_with({(1, 1, "Thu", "AM"): ("gynaecology", "3 major + 1 minor")})
+    assert T.summarise(tcfg(g, overrides={"programme": {"max_cases_per_session": 4}}))["issues"] == []
+
+
+def test_medium_tier_for_urology_lists():
+    for lt, grp in (("urology_prostate", "prostatectomy"), ("urology_kidney", "nephrectomy"),
+                    ("urology_bladder", "cystectomy")):
+        spec = D.LIST_TYPES[lt]
+        assert spec["medium"] == [[grp, 1.0]] and spec["major"] == [] and spec["minor"] == []
+    g = grid_with({(1, 1, "Mon", "AM"): ("urology_bladder", "1 medium"),
+                   (1, 1, "Mon", "PM"): ("urology_bladder", "Continuing"),
+                   (1, 1, "Tue", "AM"): ("urology_prostate", "1 major")})
+    r = E.run(tcfg(g))
+    assert r["template_summary"]["cases_per_fortnight"]["cystectomy"] == pytest.approx(1)
+    assert r["template_summary"]["cases_per_fortnight"]["not_modelled"] == pytest.approx(1)
+    assert any("map to no modelled procedure" in w for w in r["warnings"])
+
+
+def test_not_modelled_cases_cost_but_carry_no_benefit():
+    g = grid_with({(1, 1, "Mon", "AM"): ("other", "2 major")})
+    r = E.run(tcfg(g))
+    y = r["yearly"][2]
+    assert y["cases"] == pytest.approx(45) and y["offsets"] == 0 and y["bed_days"] == 0
+    assert y["instruments"] == pytest.approx(45 * r["config"]["platform"]["instruments_per_case"])
+
+
+def test_abdominal_wall_reconstruction_rename_and_flag():
+    assert D.PROCEDURE_GROUPS["abdominal_wall"]["label"] == "Abdominal wall reconstruction"
+    rows = RG.rows(E.build_config())
+    flag = [x for x in rows if x["status"] == "Flagged for review"]
+    assert len(flag) == 1 and "ventral and incisional hernia" in flag[0]["source"]
+    assert "Flagged for review" in D.EVIDENCE_NOTES["abdominal_wall"]
+
+
+def test_gynaecology_major_split_and_editable_mapping():
+    assert D.LIST_TYPES["gynaecology"]["major"] == [["hysterectomy", 0.40], ["endometriosis", 0.50],
+                                                    ["myomectomy", 0.10]]
+    g = grid_with({(1, 1, "Tue", "AM"): ("gynaecology", "2 major")})
+    cfg = tcfg(g, overrides={"list_map": {"gynaecology": {"major": [["hysterectomy", 1.0]]}}})
+    assert T.summarise(cfg)["cases_per_fortnight"]["hysterectomy"] == pytest.approx(2)
+    mods = [m for m in E.modified_priors(cfg) if m["item"].startswith("list_map")]
+    assert len(mods) == 1 and mods[0]["used"] == "Hysterectomy (benign and malignant) 100%"
+    assert E.describe_item(cfg, mods[0]["item"]) == "Template mapping: Gynaecology, major cases"
+    assert "endometriosis" in mods[0]["default"].lower()
+    assert [m for m in E.modified_priors(E.build_config()) if m["item"].startswith("list_map")] == []
+
+
+def test_mapping_validation():
+    with pytest.raises(ValueError, match="add up to 100%"):
+        E.build_config(overrides={"list_map": {"gynaecology": {"major": [["hysterectomy", 0.6]]}}})
+    with pytest.raises(ValueError, match="unknown procedure group"):
+        E.build_config(overrides={"list_map": {"colorectal": {"minor": [["rectopexy", 1.0]]}}})
+
+
+def test_mapping_rows_round_trip():
+    cfg = E.build_config()
+    rebuilt = T.list_map_from_rows(T.mapping_rows(cfg), cfg["list_map"])
+    assert rebuilt == cfg["list_map"]
+    rows = T.mapping_rows(cfg)
+    for row in rows:
+        if row["list_type"] == "colorectal" and row["tier"] == "minor":
+            row["group"] = "colorectal"
+    assert T.list_map_from_rows(rows, cfg["list_map"])["colorectal"]["minor"] == [["colorectal", 1.0]]
+
+
+def test_demand_check_limits_delivery_and_flags_overscheduling():
+    g = grid_with({(1, w, d, s): ("colorectal", "1 major") for w in (1, 2) for d in D.WEEKDAYS
+                   for s in ("AM", "PM") if not (d == "Fri" and s == "PM")})
+    on = E.run(tcfg(g, demand_check=True, overrides={"groups": {"colorectal": {"volume": 200}}}))
+    off = E.run(tcfg(g, demand_check=False, overrides={"groups": {"colorectal": {"volume": 200}}}))
+    assert on["groups"]["colorectal"]["template_cases"] == pytest.approx(18 * 22.5)
+    assert on["groups"]["colorectal"]["planned_cases"] == pytest.approx(200)
+    assert any("only 49% full" in w for w in on["warnings"])
+    assert off["groups"]["colorectal"]["planned_cases"] == pytest.approx(405)
+    assert off["unmet_cases"] == 0
+
+
+def test_realisation_factor_scales_templated_cases():
+    g = grid_with(HAND)
+    a = E.run(tcfg(g))
+    b = E.run(tcfg(g, overrides={"programme": {"realisation_factor": 0.8}}))
+    assert b["yearly"][2]["cases"] == pytest.approx(0.8 * a["yearly"][2]["cases"])
+
+
+def test_700_advisory_applies_to_templates():
+    g = grid_with({(1, w, d, s): ("gynaecology", "3 minor") for w in (1, 2) for d in D.DAYS for s in D.SESSIONS})
+    r = E.run(tcfg(g))
+    assert r["yearly"][2]["cases"] == pytest.approx(42 * 3 * 22.5)
+    assert any("(advisory)" in w for w in r["warnings"])
+    assert next(x for x in r["guardrails"] if x["check"] == "Robotic cases per robot per year")["status"] == "amber"
+
+
+@pytest.mark.parametrize("preset", D.PRESETS)
+@pytest.mark.parametrize("platform", ["platform_b", "platform_d"])
+@pytest.mark.parametrize("variant", ["standard", "extended"])
+def test_default_templates(preset, platform, variant):
+    cfg = E.build_config(preset, platform, template=variant)
+    ts = T.summarise(cfg)
+    assert ts["issues"] == [] and ts["booked"] > 0 and ts["booked"] <= ts["available"]
+    for c in ts["cells"]:
+        if c["day"] == "Fri" and c["session"] == "PM":
+            assert c["status"] == "maintenance"
+        if c["status"] == "booked":
+            assert c["list_type"]
+        if c["day"] in ("Sat", "Sun"):
+            assert c["status"] == "unused"
+        if c["session"] == "Eve" and variant == "standard":
+            assert c["status"] == "unused"
+    evenings = sum(1 for c in ts["cells"] if c["session"] == "Eve" and c["status"] == "booked")
+    if variant == "standard":
+        assert evenings == 0
+
+
+def test_extended_variant_uses_evenings_for_large_hospital():
+    std = T.summarise(E.build_config("large_1", template="standard"))
+    ext = T.summarise(E.build_config("large_1", template="extended"))
+    assert ext["booked"] > std["booked"]
+    assert any(c["session"] == "Eve" and c["status"] == "booked" for c in ext["cells"])
+
+
+def test_custom_template_resized_to_robot_count():
+    cfg = E.build_config("large_2", template=grid_with(HAND, robots=1))
+    assert len(cfg["template"]) == 2 and T.summarise(cfg)["booked"] == 5
+
+
+def test_options_appraisal_with_custom_template_marks_suggested_option():
+    case = {"cover": {}, "configuration": {"preset": "large_1", "robots": 1, "platform": "platform_b",
+                                           "template": grid_with(HAND)}}
+    blocks, _ = BC.build_blocks(case, include_charts=False)
+    text = all_text(blocks)
+    assert "Option 2: 2 robots *" in text and "template suggested from demand" in text
+
+
+def test_business_case_shows_template_and_mapping():
+    blocks, r = BC.build_blocks(json.load(open(EX / "example_case.json")), include_charts=False)
+    text = all_text(blocks)
+    assert "6.1 Two-week theatre template" in text and "Robot 1: two-week template" in text
+    assert "How the theatre template maps to procedures" in text
+    assert "Gynaecology" in text and "Hysterectomy (benign and malignant) 40%" in text
+
+
+def test_inputs_round_trip_with_template():
+    case = json.load(open(EX / "example_case.json"))
+    case["configuration"].update(template=grid_with(HAND), template_variant="custom", demand_check=False,
+                                 list_map={"gynaecology": {"major": [["hysterectomy", 1.0]]}},
+                                 programme={"max_cases_per_session": 4})
+    parsed, err = IO.parse_case(json.dumps(case))
+    assert err is None
+    st = IO.widget_state(parsed)
+    assert st["w_variant"] == "standard" and st["w_maxcases"] == 4 and st["w_demandcheck"] is False
+    r = E.run(E.build_config(**BC.configure(parsed)))
+    assert r["template_summary"]["booked"] == 5 and r["config"]["list_map"]["gynaecology"]["major"] == [["hysterectomy", 1.0]]
+
+
+# ---------------------------------------------------------------------------
+# K. Tariff (cash case only)
+# ---------------------------------------------------------------------------
+def test_tariff_defaults_are_zero_and_prostatectomy_is_flagged():
+    assert all(g["tariff_uplift"] == 0 for g in D.PROCEDURE_GROUPS.values())
+    assert "prostatectomy" in D.TARIFF_SOURCES and "Annex A" in D.TARIFF_SOURCES["prostatectomy"]
+    rows = RG.rows(E.build_config("large_1"))
+    pro = next(x for x in rows if x["parameter"].startswith("Radical prostatectomy: extra tariff"))
+    assert pro["status"] == "Placeholder"
+
+
+def test_tariff_enters_cash_case_only():
+    base = E.run(E.build_config("large_1"))
+    cfg = E.build_config("large_1", template=base["config"]["template"],
+                         overrides={"groups": {"prostatectomy": {"tariff_uplift": 500.0}}})
+    r = E.run(cfg)
+    for y0, y in zip(base["yearly"], r["yearly"]):
+        pro = y["by_group"]["prostatectomy"]["cases"]
+        assert y["tariff_income"] == pytest.approx(500 * pro)
+        assert y["net_cash_cost"] == pytest.approx(y["extra_cost"] - y["tariff_income"])
+        assert y["extra_cost"] == pytest.approx(y0["extra_cost"])
+    assert r["economic"]["net_present_cost"] == pytest.approx(base["economic"]["net_present_cost"])
+    assert r["totals"]["cost_per_bed_day_released"] == pytest.approx(base["totals"]["cost_per_bed_day_released"])
+    assert r["break_even"]["net_cost_at_plan"] == pytest.approx(base["break_even"]["net_cost_at_plan"])
+    assert any(m["item"] == "prostatectomy.tariff_uplift" for m in r["user_modified"])
+    assert base["totals"]["tariff_income"] == 0
+
+
+def test_tariff_in_business_case():
+    case = {"cover": {}, "configuration": {"preset": "large_1", "robots": 1, "platform": "platform_b",
+                                           "groups": {"prostatectomy": {"tariff_uplift": 500.0}}}}
+    blocks, r = BC.build_blocks(case, include_charts=False)
+    text = all_text(blocks)
+    assert "Less extra tariff income" in text and "Net cash cost to the trust" in text
+    assert "only the difference over what the trust would earn" in text
+    assert "excluded from the economic view" in text
+    blocks0, _ = BC.build_blocks(json.load(open(EX / "example_case.json")), include_charts=False)
+    assert "No extra tariff income has been entered" in all_text(blocks0)
+
+
+def test_tornado_net_cash_metric():
+    cfg = E.build_config("large_1", overrides={"groups": {"prostatectomy": {"tariff_uplift": 500.0}}})
+    t = S.tornado(cfg, "net_cash")
+    assert t["base"] == pytest.approx(E.run(cfg)["totals"]["net_cash_cost"])
+    assert any(b["name"] == "Share of templated cases that go ahead" for b in t["bars"])
+
+
+
+# ---------------------------------------------------------------------------
+# L. v0.6.1: templates fill until demand is met, blanks, advisory cap, cancellations
+# ---------------------------------------------------------------------------
+TEMPLATE_CASES = list(itertools.product(D.PRESETS, ["platform_b", "platform_d"], ["standard", "extended"]))
+
+
+def open_standard_sessions(ts):
+    return [c for c in ts["cells"] if c["status"] == "open"]
+
+
+@pytest.mark.parametrize("preset,platform,variant", TEMPLATE_CASES)
+def test_default_templates_fill_until_demand_met_or_sessions_run_out(preset, platform, variant):
+    # v0.6.0 left 4 medium DGH sessions unbooked while 85 cases a year went unscheduled
+    r = E.run(E.build_config(preset, platform, template=variant))
+    ts = r["template_summary"]
+    if open_standard_sessions(ts):
+        assert r["unmet_cases"] < 0.5, (preset, platform, variant, r["unmet_cases"])
+
+
+@pytest.mark.parametrize("preset,platform,variant", TEMPLATE_CASES)
+def test_extended_day_uses_evenings_only_when_daytime_is_full(preset, platform, variant):
+    ts = E.run(E.build_config(preset, platform, template=variant))["template_summary"]
+    for rb in {c["robot"] for c in ts["cells"]}:
+        cells = [c for c in ts["cells"] if c["robot"] == rb]
+        if any(c["session"] == "Eve" and c["status"] == "booked" for c in cells):
+            assert not [c for c in cells if c["status"] == "open"]
+
+
+@pytest.mark.parametrize("preset", D.PRESETS)
+def test_filler_trims_last_session_to_cases_needed(preset):
+    # for procedures that are the only procedure in their tier, the template overshoots
+    # demand by less than one case per fortnight (22.5 a year)
+    cfg = E.build_config(preset, overrides={"demand_check": False})
+    ts = T.summarise(cfg)
+    solo = {g for spec in cfg["list_map"].values() for t in D.TIERS for g, _ in spec[t] if len(spec[t]) == 1}
+    multi = {g for spec in cfg["list_map"].values() for t in D.TIERS for g, _ in spec[t] if len(spec[t]) > 1}
+    for g in solo - multi:
+        tc = ts["cases_per_fortnight"][g] * 22.5
+        assert tc < cfg["groups"][g]["volume"] + 22.5 + 1e-6, g
+
+
+def test_suggest_from_demand_meets_extra_demand_with_spare_sessions():
+    cfg = E.build_config("medium_dgh_2", template=None, overrides={"groups": {"upper_gi": {"volume": 60}}})
+    r = E.run(E.build_config("medium_dgh_2", template=T.suggest_template(cfg),
+                             overrides={"groups": {"upper_gi": {"volume": 60}}}))
+    assert r["groups"]["upper_gi"]["unmet_cases"] < 0.5 and r["unmet_cases"] < 0.5
+
+
+def test_suggest_from_demand_allows_for_cancellations():
+    base = E.build_config("medium_dgh_2", template=None)
+    low = E.build_config("medium_dgh_2", template=None, overrides={"programme": {"realisation_factor": 0.8}})
+    assert T.summarise(base, T.suggest_template(low))["booked"] > T.summarise(base, T.suggest_template(base))["booked"]
+    r = E.run(E.build_config("medium_dgh_2", template=T.suggest_template(low),
+                             overrides={"programme": {"realisation_factor": 0.8}}))
+    assert r["unmet_cases"] < 0.5
+
+
+def test_v05_demand_volumes_restored():
+    v = {k: (g["cases_medium"], g["cases_large"]) for k, g in D.PROCEDURE_GROUPS.items()}
+    assert v["hysterectomy"] == (100, 160) and v["myomectomy"] == (25, 40) and v["endometriosis"] == (40, 60)
+    assert D.BENCHMARK["within_specialty"]["Gynaecology"] == {"hysterectomy": 0.60, "endometriosis": 0.20,
+                                                              "myomectomy": 0.10, "adnexal": 0.10}
+
+
+def test_split_mismatch_is_explained():
+    r = E.run(E.build_config("medium_dgh_1"))
+    w = [x for x in r["warnings"] if x.startswith("Gynaecology major cases: the template split")]
+    assert len(w) == 1 and "hysterectomy 40%" in w[0] and "hysterectomy 61%" in w[0]
+    consistent = {"hysterectomy": {"volume": 66}, "endometriosis": {"volume": 83}, "myomectomy": {"volume": 16}}
+    r2 = E.run(E.build_config("medium_dgh_1", overrides={"groups": consistent}))
+    assert not any("template split" in x for x in r2["warnings"])
+
+
+def test_cancellation_factor_scales_delivery():
+    # with the demand check off, delivery scales exactly; with it on, procedures scheduled
+    # above demand are unaffected until the factor brings them below it
+    base = E.build_config("large_1")
+    off = {"demand_check": False}
+    a = E.run(E.build_config("large_1", template=base["template"], overrides=off))
+    b = E.run(E.build_config("large_1", template=base["template"],
+                             overrides=dict(off, programme={"realisation_factor": 0.9})))
+    assert b["yearly"][2]["cases"] == pytest.approx(0.9 * a["yearly"][2]["cases"])
+    on_a = E.run(base)
+    on_b = E.run(E.build_config("large_1", template=base["template"], overrides={"programme": {"realisation_factor": 0.9}}))
+    for k, g in on_b["groups"].items():
+        # template_cases already includes the 0.9 factor
+        assert g["template_cases"] == pytest.approx(0.9 * on_a["groups"][k]["template_cases"])
+        assert g["planned_cases"] == pytest.approx(min(g["template_cases"], g["ceiling"])
+                                                   if k not in D.NOT_MODELLED else g["template_cases"])
+    assert on_b["yearly"][2]["cases"] <= on_a["yearly"][2]["cases"]
+    assert D.PROGRAMME["realisation_factor"] == 1.0
+
+
+def test_ui_rows_show_blanks_not_none_and_round_trip():
+    cfg = E.build_config("medium_dgh_1")
+    labels = {k: v["label"] for k, v in cfg["list_map"].items()}
+    rows = T.to_ui_rows(cfg["template"][0], labels)
+    for row in rows:
+        for k, v in row.items():
+            assert v is not None and v != "" and v != "None", (k, v)
+    assert rows[0]["Evening cases"] == T.BLANK and T.BLANK.strip() == ""
+    back = T.from_ui_rows(rows, {v: k for k, v in labels.items()})
+    assert back == cfg["template"][0]
+    odd = dict(rows[0], **{"AM list": None, "AM cases": float("nan")})
+    assert T.from_ui_rows([odd], {})[0]["AM_cases"] == "" and T.from_ui_rows([odd], {})[0]["AM_list"] == ""
+    assert T.BLANK in T.ui_options(T.case_options(3)) and "" not in T.ui_options(T.case_options(3))
+
+
+def test_inputs_round_trip_cancellation_factor():
+    case = json.load(open(EX / "example_case.json"))
+    case["configuration"]["programme"] = {"realisation_factor": 0.85}
+    parsed, err = IO.parse_case(json.dumps(case))
+    assert err is None and IO.widget_state(parsed)["w_realisation"] == 85

@@ -1,4 +1,4 @@
-# Exact versions tested with v0.5.1 (477 tests passing). Update deliberately and re-run the tests.
+# Exact versions tested with v0.6.1 (681 tests passing). Update deliberately and re-run the tests.
 streamlit==1.65.0
 altair==6.3.0
 pandas==3.0.2

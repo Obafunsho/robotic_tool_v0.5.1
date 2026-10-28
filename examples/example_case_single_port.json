@@ -15,6 +15,7 @@
     "platform": "platform_d",
     "evidence": "central",
     "instrument_price": "standard_discount",
-    "central_capital_per_robot": 0
+    "central_capital_per_robot": 0,
+    "template_variant": "standard"
   }
 }
