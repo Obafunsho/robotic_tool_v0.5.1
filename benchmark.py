@@ -90,8 +90,9 @@ def comparison_rows(trust, bench):
     tm, bm = specialty_mix(trust), specialty_mix(bench)
     def mix_str(m):
         uro = m.get("Urology", 0)
-        gen = m.get("General surgery", 0) + m.get("Colorectal", 0) + m.get("Upper GI", 0)
-        gyn = m.get("Gynaecology", 0)
+        gen = sum(m.get(x, 0) for x in ("Colorectal", "Abdo wall complex", "Oesophagogastric",
+                                         "Hepatopancreatobiliary"))
+        gyn = m.get("Women's health", 0)
         other = max(1 - uro - gen - gyn, 0)
         return f"{uro:.0%} / {gen:.0%} / {gyn:.0%} / {other:.0%}"
 
@@ -99,7 +100,7 @@ def comparison_rows(trust, bench):
         ("Robots", str(trust["config"]["robots"]), str(bench["config"]["robots"]), "Benchmark set at one robot."),
         ("Robotic cases per robot per year (year 3)", f"{trust['cases_per_robot']:,.0f}",
          f"{bench['cases_per_robot']:,.0f}", src["cases_per_robot"]),
-        ("Case mix: urology / general and colorectal / gynaecology / other", mix_str(tm), mix_str(bm),
+        ("Case mix: urology / general surgery / women's health / other", mix_str(tm), mix_str(bm),
          src["specialty_shares"] + " Split within specialties: " + src["within_specialty"][0].lower()
          + src["within_specialty"][1:]),
         ("Open operations avoided per robot per year", f"{per_robot(trust, 'open_avoided'):,.0f}",

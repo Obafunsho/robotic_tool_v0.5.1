@@ -27,13 +27,15 @@ def main(preset="medium_dgh_1", platform="platform_b", evidence="central", templ
     if r["input_mode"] == "template":
         ts = r["template_summary"]
         w("## Step 1 to 3. Two-week theatre template")
-        w(f"Template: {cfg.get('template_variant')}. Each robot has 14 days x 3 sessions. Standard hours are weekday "
-          "AM and PM (Friday PM maintenance); evening and weekend sessions count only when used.")
+        w(f"Template: {cfg.get('template_variant')}. Each robot has 14 days x 3 sessions (AM session 1, PM session 2, "
+          "PM session 3), one procedure per session. Standard hours are weekday sessions 1 and 2 (Friday session 2 "
+          "maintenance); session 3 and weekend sessions count only when used. Cases per session follow complexity: "
+          "High 1, Medium 1.5, Low 3, whole day 0.5.")
         w(f"Booked sessions per fortnight = {ts['booked']}; available = {ts['available']}; utilisation = "
           f"{ts['booked']} / {ts['available']} = {r['booked_utilisation']:.0%}.")
         w(f"Annual cases = cases per fortnight x {f:g} fortnights x {pr.get('realisation_factor', 1.0):.0%} going "
-          f"ahead; then limited to demand (check {'on' if cfg.get('demand_check', True) else 'off'}) and to "
-          f"{pr['max_cases_per_robot']:,} per robot.\n")
+          f"ahead; then limited to demand (check {'on' if cfg.get('demand_check', True) else 'off'}). Above "
+          f"{pr['max_cases_per_robot']:,} per robot a year is flagged amber (advisory), not cut.\n")
         w("| Procedure | Cases per fortnight | On template (year) | Demand | Delivered | Unmet |")
         w("| --- | --- | --- | --- | --- | --- |")
         for k, g in cfg["groups"].items():
@@ -42,9 +44,9 @@ def main(preset="medium_dgh_1", platform="platform_b", evidence="central", templ
                 continue
             w(f"| {g['label']} | {ts['cases_per_fortnight'][k]:.2f} | {go['template_cases']:.0f} | {go['ceiling']:.0f} | "
               f"{go['planned_cases']:.0f} | {go['unmet_cases']:.0f} |")
-        w("\nHow tiers count (Appendix A of the business case): " + "; ".join(
-            f"{spec['label']} {t} = {T.describe_split(cfg, spec[t])}" for spec in cfg["list_map"].values()
-            for t in D.TIERS if spec[t]) + ".\n")
+        w("\nCases per booked session by procedure: " + "; ".join(
+            f"{g['label'].split(' (')[0]} {g['cases_per_session']:g}" + (" (whole day)" if g.get("whole_day") else "")
+            for g in cfg["groups"].values()) + ".\n")
     else:
         w("## Step 1 to 3. Demand, capacity and plan (v0.5 demand-led planner)")
         w(f"Capacity per fortnight = robots x sessions per week x 2 = {cfg['robots']} x "
@@ -52,7 +54,7 @@ def main(preset="medium_dgh_1", platform="platform_b", evidence="central", templ
         w(f"Fortnights per year = {pr['operating_weeks_per_year']} / 2 = {f:g}.")
         w(f"A dedicated list is created only if it would be at least {pr['min_list_fill']:.0%} full; leftover demand is "
           f"pooled on shared half-day sessions, again only if they would be at least {pr['min_list_fill']:.0%} full. "
-          f"Delivered cases are capped at {pr['max_cases_per_robot']:,} per robot per year.\n")
+          f"Above {pr['max_cases_per_robot']:,} cases per robot per year is flagged amber (advisory), not cut.\n")
         w("| Group | Robotic cases available | Open without robot | Cases per list | List | Sessions/fortnight | Own lists | Shared list | Unmet |")
         w("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
         for k, g in cfg["groups"].items():

@@ -53,7 +53,6 @@ def widget_state(case):
                     else "Open surgery"),
         "w_variant": c.get("template_variant", "standard") if c.get("template_variant") in ("standard", "extended")
         else "standard",
-        "w_maxcases": int(c.get("programme", {}).get("max_cases_per_session", 3)),
         "w_demandcheck": bool(c.get("demand_check", True)),
         "w_realisation": int(round(100 * float(c.get("programme", {}).get("realisation_factor", 1.0)))),
         "w_basis": c.get("platform_overrides", {}).get(

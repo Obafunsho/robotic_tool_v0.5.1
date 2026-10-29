@@ -27,6 +27,7 @@ import docx_render
 import engine as E
 import register as RG
 import sensitivity as S
+import register_xlsx as RX
 import templates as T
 
 HERE = Path(__file__).parent
@@ -75,8 +76,10 @@ def configure(case):
             ov[k] = copy.deepcopy(c[src])
     for k, v in c.get("programme", {}).items():
         ov["programme"][k] = v
-    if "list_map" in c:
-        ov["list_map"] = copy.deepcopy(c["list_map"])
+    # register review: changes Aneel made in the Excel register, applied for this preset
+    rev = c.get("register_review") or {}
+    if rev.get("changes"):
+        RX.apply_changes(ov, rev["changes"], c["preset"])
     if "demand_check" in c:
         ov["demand_check"] = bool(c["demand_check"])
     template = c.get("template") or c.get("template_variant", "standard")
@@ -154,11 +157,23 @@ def label_for(cfg, key):
 
 def n_lists_txt(r):
     if r["input_mode"] == "template":
-        n = len(r["template_summary"]["list_type_sessions"])
-        return plural(n, "list type") + " on the two-week theatre template"
+        n = len(r["template_summary"]["procedure_sessions"])
+        return plural(n, "procedure") + " on the two-week theatre template"
     n = sum(1 for k, v in r["plan"].items() if v and k != E.SHARED)
     return plural(n, "specialty").replace("specialtys", "specialties") + (
         " and a shared list" if r["plan"].get(E.SHARED) else "")
+
+
+def not_modelled_note(r):
+    """Flag procedures whose 30-day benefit is not yet modelled, so zero is not read as no benefit."""
+    nm = [(g["label"], g["planned_cases"]) for k, g in r["groups"].items()
+          if not g.get("benefit_modelled", True) and g["planned_cases"] >= 0.5]
+    if not nm:
+        return ""
+    return ("30-day benefit not yet modelled for " + "; ".join(f"{a} ({n0(b)} cases a year)" for a, b in nm)
+            + ". These cases are costed, but their 30-day benefit is a zero placeholder pending evidence, not a "
+            "finding that the robot has no benefit. The patient consequences and cost per outcome above therefore "
+            "understate them (Appendix A).")
 
 
 def scheduled_groups(r):
@@ -229,6 +244,9 @@ def build_blocks(case, include_charts=True):
                    ["Returns to theatre avoided", n1(y3["reoperations"])],
                    ["Readmissions avoided", n1(y3["readmissions"])],
                    ["Extra elective operations the released beds could support", n0(y3["extra_elective_cases_enabled"])]]))
+    nm = not_modelled_note(r)
+    if nm:
+        add(dict(type="p", text=nm))
     add(dict(type="h3", text="Cost per outcome (five years)"))
     add(dict(type="table", header=["Measure", "Extra cost to the trust"], widths=[6500, 2526], rows=[
         ["Per robotic operation", ratio(t["cost_per_case"])],
@@ -635,22 +653,21 @@ def build_blocks(case, include_charts=True):
     add(dict(type="h3", text="Rationale and sources"))
     add(dict(type="table", header=["Specialty", "Counterfactual rationale", "Evidence"], widths=[2400, 3300, 3326],
              rows=[[g["label"], g["p_open_rationale"],
-                    g.get("evidence_note") or D.EVIDENCE_NOTES.get(k, D.DEFAULT_EVIDENCE_NOTE)]
+                    ("" if g.get("benefit_modelled", True) else D.NOT_YET_MODELLED_TEXT.capitalize() + ". ")
+                    + (g.get("evidence_note") or D.EVIDENCE_NOTES.get(k, D.DEFAULT_EVIDENCE_NOTE))
+                    + (f" Origin: {g['origin']}" if g.get("origin") else "")]
                    for k, g in cfg["groups"].items() if g["volume"]], small=True))
-    add(dict(type="h3", text="How the theatre template maps to procedures"))
+    add(dict(type="h3", text="Procedures: complexity and cases per session"))
     add(dict(type="p", text=(
-        "Each session on the template has a list type and a number of major, medium and minor cases. The table "
-        "shows which procedure each tier counts as, and the split where a tier covers several procedures. "
-        "'Not modelled' cases are costed but carry no 30-day benefit. Changes from the defaults are listed in "
-        "Appendix C.")))
-    mrows = []
-    for lt, spec in cfg["list_map"].items():
-        for tier in D.TIERS:
-            if spec.get(tier):
-                mrows.append([spec["label"], tier.capitalize(), T.describe_split(cfg, spec[tier])])
-    mrows.append(["Any other list type or tier", "", "Not modelled"])
-    add(dict(type="table", header=["List type", "Tier", "Counts as"], widths=[2600, 1200, 5226], rows=mrows,
-             small=True))
+        "Each booked session on the template counts as the cases per session shown, set by the procedure's "
+        "complexity (High 1, Medium 1.5, Low 3; a whole-day procedure 0.5, so one case across two sessions). "
+        "Changes from the defaults are listed in Appendix C.")))
+    add(dict(type="table", header=["Specialty", "Procedure", "Complexity", "Cases per session", "Whole day",
+                                   "30-day benefit"], widths=[1700, 3200, 1000, 1000, 800, 1326],
+             rows=[[g["specialty"], g["label"], g["complexity"], f"{g['cases_per_session']:g}",
+                    "Yes" if g.get("whole_day") else "No",
+                    "Modelled" if g.get("benefit_modelled", True) else "Not yet modelled"]
+                   for g in sorted(cfg["groups"].values(), key=lambda x: x["label"].lower())], small=True))
     add(dict(type="h3", text="Tariff: extra income per robotic case (cash case only)"))
     add(dict(type="table", header=["Procedure", "Extra income per case", "Source"], widths=[3000, 1600, 4426],
              rows=[[g["label"], gbp(g.get("tariff_uplift", 0.0)),
@@ -699,13 +716,32 @@ def build_blocks(case, include_charts=True):
     add(dict(type="h1", text="Appendix D. Assumptions register"))
     from collections import Counter
     cnt = Counter(x["status"] for x in reg)
+    review = case["configuration"].get("register_review") or {}
     add(dict(type="p", text=(
         "Every input the case depends on, with its source, evidence grade, status and the person who must sign it "
-        "off. " + "; ".join(f"{v} {k.lower()}" for k, v in sorted(cnt.items())) + ". No entry has yet been reviewed "
-        "by the relevant specialty.")))
+        "off. " + "; ".join(f"{v} {k.lower()}" for k, v in sorted(cnt.items())) + ". "
+        + ("The clinical lead's review of the register has been loaded (see below)." if review else
+           "No entry has yet been reviewed by the relevant specialty.")
+        + " The full register, one row per procedure and assumption, is available as an Excel file from the tool.")))
     add(dict(type="table", header=["Assumption", "Value", "Source", "Status", "Owner"],
              widths=[2500, 1100, 2926, 1100, 1400],
              rows=[[x["parameter"], x["value"], x["source"], x["status"], x["owner"]] for x in reg], small=True))
+    if review:
+        known = {x["id"]: x for x in RX.register_rows()}
+
+        def what(i):
+            x = known.get(i)
+            return f"{x['procedure']}: {x['assumption']}" if x else i
+        add(dict(type="h3", text="Clinical review of the register"))
+        if review.get("changes"):
+            add(dict(type="table", header=["Assumption changed in review", "From", "To", "Comment"],
+                     widths=[3800, 1100, 1100, 3026],
+                     rows=[[what(i), known[i]["value"] if i in known else "", str(v),
+                            review.get("comments", {}).get(i, "")] for i, v in review["changes"].items()], small=True))
+        if review.get("needs_evidence"):
+            add(dict(type="p", text="Marked 'needs evidence' in review: " + "; ".join(
+                what(i) + (f" ({review['comments'][i]})" if review.get("comments", {}).get(i) else "")
+                for i in review["needs_evidence"]) + "."))
     add(dict(type="h1", text="Appendix E. References"))
     add(dict(type="numbered", items=REFERENCES))
     return B, r
@@ -727,6 +763,13 @@ REFERENCES = [
     "Wallace BK, Dishong DM, Cohen AJ. Single-port robotic prostatectomy is associated with higher same-day discharge and reduced length of stay: a NSQIP analysis. World J Urol 2026 (published online Sept 10).",
     "Abaza R, Murphy C, Bsatee A, Brown DH Jr, Martinez O. Single-port robotic surgery allows same-day discharge in majority of cases. Urology 2021; 148: 159-65.",
     "Single port robotic urologic surgery: fewer ports, higher costs. American Urological Association Annual Meeting 2022 (abstract MP32-10).",
+    "Prabhu AS, Carbonell A, Hope W, et al. Robotic inguinal vs transabdominal laparoscopic inguinal hernia repair: the RIVAL randomized clinical trial. JAMA Surg 2020; 155: 380-87.",
+    "van der Sluis PC, van der Horst S, May AM, et al. Robot-assisted minimally invasive thoracolaparoscopic esophagectomy versus open transthoracic esophagectomy for resectable esophageal cancer: a randomized controlled trial. Ann Surg 2019; 269: 621-30.",
+    "Klotz R, Mihaljevic AL, Kulu Y, et al. Robotic versus open partial pancreatoduodenectomy (EUROPA): a randomised controlled stage 2b trial. Lancet Reg Health Eur 2024; 39: 100864.",
+    "Kalata S, Thumma JR, Norton EC, Dimick JB, Sheetz KH. Comparative safety of robotic-assisted vs laparoscopic cholecystectomy. JAMA Surg 2023; 158: 1303-10.",
+    "Toesca A, Sangalli C, Maisonneuve P, et al. A randomized trial of robotic mastectomy versus open surgery in women with breast cancer or BRCA mutation. Ann Surg 2022; 276: 11-19.",
+    "Nessa A, Shaikh S, Fuller M, Masannat YA, Kastora SL. Postoperative complications and surgical outcomes of robotic versus conventional nipple-sparing mastectomy in breast cancer: meta-analysis. Br J Surg 2024; 111: znad336.",
+    "The impact of robotics in liver surgery: a worldwide systematic review and short-term outcomes meta-analysis on 2,728 cases. 2022.",
     "[Add local and national references as required.]",
 ]
 
@@ -759,9 +802,10 @@ def template_blocks(r):
     variant = {"standard": "pre-filled from demand, standard day", "extended": "pre-filled from demand, extended day",
                "custom": "entered by the trust"}.get(cfg.get("template_variant"), "entered by the trust")
     out.append(dict(type="p", text=(
-        f"The template ({variant}) covers 14 days, Monday to Sunday twice, with AM, PM and evening sessions on each "
-        f"robot. Standard hours are weekday AM and PM, with Friday PM kept for maintenance; evening and weekend "
-        f"sessions count only when used. {ts['booked']} of {ts['available']} available sessions per fortnight are "
+        f"The template ({variant}) covers 14 days, Monday to Sunday twice, with three sessions a day on each robot "
+        f"(AM session 1, PM session 2, PM session 3). Each session is booked with one procedure; cases per session "
+        f"follow the procedure's complexity (Appendix A). Standard hours are weekday sessions 1 and 2, with Friday "
+        f"session 2 kept for maintenance; session 3 and weekend sessions count only when used. {ts['booked']} of {ts['available']} available sessions per fortnight are "
         f"booked ({r['booked_utilisation']:.0%}). The fortnight is extrapolated to {pr['operating_weeks_per_year']} "
         f"operating weeks a year, and {pr.get('realisation_factor', 1.0):.0%} of templated cases are assumed to go "
         "ahead.")))
@@ -769,7 +813,8 @@ def template_blocks(r):
     for k, g in r["groups"].items():
         if g.get("template_cases", 0) < 0.5 and g["unmet_cases"] < 0.5:
             continue
-        rows.append([g["label"], f"{g['sessions_per_fortnight']:.1f}", n0(g.get("template_cases", 0)),
+        rows.append([g["label"] + ("" if g.get("benefit_modelled", True) else " (30-day benefit not yet modelled)"),
+                     f"{g['sessions_per_fortnight']:.1f}", n0(g.get("template_cases", 0)),
                      n0(g["ceiling"]) if cfg.get("demand_check", True) and k not in D.NOT_MODELLED else "not checked",
                      n0(g["planned_cases"]), n0(g["unmet_cases"])])
     out.append(dict(type="table", header=["Procedure", "Sessions per fortnight", "Cases on template (year)",
@@ -790,21 +835,15 @@ def template_blocks(r):
                     continue
                 grid_rows.append(row)
         out.append(dict(type="h3", text=f"Robot {rb}: two-week template"))
-        out.append(dict(type="table", header=["", "AM", "PM", "Evening"], widths=[1526, 2500, 2500, 2500],
+        out.append(dict(type="table", header=["", "AM session 1", "PM session 2", "PM session 3"],
+                        widths=[1526, 2500, 2500, 2500],
                         rows=grid_rows, small=True))
     out.append(dict(type="p", text="Saturdays and Sundays are shown only where a session is in use."))
     return out
 
 
 def cell_text(cfg, cell):
-    if cell["status"] == "booked":
-        lt = T.label_of(cfg, cell["list_type"]) if cell["list_type"] else ""
-        return f"{lt}: {cell['entry'].lower() if cell['entry'] == 'Continuing' else cell['entry']}".strip(": ")
-    if cell["status"] == "open":
-        return "Unbooked"
-    if cell["status"] in ("closed", "maintenance"):
-        return cell["status"].capitalize()
-    return ""
+    return T.cell_text(cfg, cell)
 
 
 def legacy_plan_blocks(r):

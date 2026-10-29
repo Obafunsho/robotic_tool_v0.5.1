@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.7.0 (October 2026)
+
+Simpler template input and the clinical lead's procedure list.
+
+Template input
+- One dropdown per session, with columns Week, Day, "AM session 1", "PM session 2" and "PM session 3".
+  - Options: "Unfilled session", then 17 "Specialty – Procedure" entries, then Maintenance and Closed.
+  - The separate cases dropdown is gone, along with major/medium/minor tiers, the mapping table and "Continuing".
+- Cases per session come from complexity (High 1, Medium 1.5, Low 3), editable in an advanced table, with changes flagged.
+  - Whole-day procedures (radical cystectomy, pancreatoduodenectomy, oesophagogastric resection, liver resection) count 0.5 per session and are flagged if booked for one session only.
+  - Radical prostatectomy falls from 3 to 2 cases a day and nephrectomy stays at 3, unless overridden.
+- Pre-filled templates are rebuilt from demand. The filler places whole-day procedures as AM/PM pairs and still fills until demand is met or sessions run out.
+- Medium DGH, 1 robot, standard day: 18 of 18 sessions booked, about 470 cases a year, about 68 unscheduled (mostly complex inguinal hernia and breast). The extended day meets all demand.
+
+Procedures
+- The 17 procedures from the clinical lead's list replace the previous groups. "Abdo wall complex" is the specialty label for both abdominal wall procedures.
+- Carried over:
+  - Colorectal splits into colectomy and rectal resection (demand 60:40, same placeholder values).
+  - Benign hysterectomy (70%), myomectomy and endometriosis merge into complex benign gynaecology, averaged by demand.
+  - Gynaecological oncology takes the malignant 30% of hysterectomy.
+  - Abdominal wall, upper GI, paediatric and transoral surgery map to their new equivalents.
+  - Nephrectomy, cystectomy and prostatectomy are unchanged.
+  - Adnexal surgery is dropped.
+  - Carried-over values that need specialty review are flagged.
+- Six new procedures have zero 30-day benefit until the evidence is reviewed: complex breast, complex cholecystectomy, complex inguinal hernia (complex repairs only; standard inguinal stays excluded as HVLC), liver resection, oesophagogastric resection and pancreatoduodenectomy.
+  - Published evidence is cited in the register: RIVAL, ROBOT, EUROPA, a breast randomised trial and meta-analysis, a liver meta-analysis, and a Medicare cholecystectomy cohort that suggests possible harm.
+  - Wherever they appear (Results, a new guardrail, the Word case), their 30-day benefit is flagged as not yet modelled, not as no benefit.
+- New placeholder demand: breast 20/40, cholecystectomy 30/50, inguinal 40/60, bariatric and anti-reflux 30/60, gynaecological oncology 30/50, and liver, oesophagogastric and pancreatoduodenectomy 0/40, 0/30, 0/30 (medium/large).
+- Single-port platform restricted to radical prostatectomy, nephrectomy, and lobectomy and transoral surgery. The transoral and thoracic groups are merged, and transanal surgery is dropped, leaving no eligible single-port demand at a medium DGH.
+
+Assumptions register (Excel)
+- New export, about 400 rows: one row per procedure and assumption, with specialty, value, unit, source, evidence grade and status.
+  - Blank Decision (agree / change to / needs evidence), Change to and Comment columns.
+  - ID and Value are locked (sheet protection, no password).
+- A reviewed file can be loaded back on the website or in code: changes are applied and flagged, and "needs evidence" items and comments appear in Appendix D.
+
+Other
+- Guardrails: new "Procedures with 30-day benefit not yet modelled" (amber when any are scheduled).
+- Benchmark mix and specialty grouping updated to the new list.
+- The v0.5 demand-led planner (used by the suggest routine and the benchmark) now places all-day lists in any two free sessions when no full day is free.
+- Tests: 647, down from 681. Template-tier and mapping tests were removed with that input; new tests cover the dropdown input, procedures, carry-overs, the not-yet-modelled flags, the single-port restriction and the Excel register.
+
 ## 0.6.1 (October 2026)
 
 Fixes from browser and template testing of v0.6.0.

@@ -42,7 +42,6 @@ def build_config(preset="medium_dgh_1", platform="platform_b", evidence="central
 
     overrides = {"groups": {gkey: {field: value}}, "unit_costs": {...},
                  "programme": {...}, "platform": {...}, "robots": int,
-                 "list_map": {list type: {tier: [[group, share], ...]}},
                  "demand_check": bool}
     template  = "standard" or "extended" (pre-filled from demand), a grid (list per
                 robot), or None for the v0.5 demand-led planner.
@@ -70,12 +69,9 @@ def build_config(preset="medium_dgh_1", platform="platform_b", evidence="central
     cfg["platform"].update(o.get("platform", {}))
     if "robots" in o:
         cfg["robots"] = int(o["robots"])
-    cfg["list_map"] = T.default_list_types("single_port" if sp else "multiport")
-    for lt, spec in o.get("list_map", {}).items():
-        if lt in cfg["list_map"]:
-            for t in D.TIERS:
-                if t in spec:
-                    cfg["list_map"][lt][t] = copy.deepcopy(spec[t])
+    # the demand-led planner uses whole lists derived from cases per session
+    for g in cfg["groups"].values():
+        g["cases_per_list"] = g["cases_per_session"] * g["list_sessions"]
     cfg["demand_check"] = bool(o.get("demand_check", True))
     # instrument price setting: a named setting multiplies the platform price;
     # a number replaces it outright (the trust's quote)
@@ -105,8 +101,11 @@ def is_multi_comparator(g):
 
 
 def validate(cfg):
-    if "list_map" in cfg:
-        T.validate_list_map(cfg)
+    for gk, g in cfg["groups"].items():
+        if not g.get("cases_per_session", 0) > 0:
+            raise ValueError(f"{g['label']}: cases per session must be greater than 0")
+        if g.get("complexity") not in D.COMPLEXITY_CASES:
+            raise ValueError(f"{g['label']}: complexity must be High, Medium or Low")
     for gk, g in cfg["groups"].items():
         if is_multi_comparator(g):
             sh = g["comparators"]
@@ -155,22 +154,20 @@ def modified_priors(cfg):
                 if g["extra_minutes"][c] != ref["extra_minutes"][c]:
                     out.append(dict(item=f"{gk}.{c}.extra_minutes", default=ref["extra_minutes"][c],
                                     used=g["extra_minutes"][c]))
-            if g["cases_per_list"] != ref["cases_per_list"]:
-                out.append(dict(item=f"{gk}.cases_per_list", default=ref["cases_per_list"], used=g["cases_per_list"]))
+            for k in ("cases_per_session", "whole_day", "complexity"):
+                if g.get(k) != ref.get(k):
+                    out.append(dict(item=f"{gk}.{k}", default=ref.get(k), used=g.get(k)))
             if g.get("tariff_uplift", 0.0) != ref.get("tariff_uplift", 0.0):
                 out.append(dict(item=f"{gk}.tariff_uplift", default=ref.get("tariff_uplift", 0.0),
                                 used=g.get("tariff_uplift", 0.0)))
             continue
-        for k in D.BENEFIT_KEYS + ["p_open", "p_robot_elsewhere", "cases_per_list",
+        for k in D.BENEFIT_KEYS + ["p_open", "p_robot_elsewhere", "cases_per_session", "whole_day", "complexity",
                                    "extra_minutes_open", "extra_minutes_lap", "tariff_uplift"]:
             if g.get(k, 0.0) != D.PROCEDURE_GROUPS[gk].get(k, 0.0):
                 out.append(dict(item=f"{gk}.{k}", default=D.PROCEDURE_GROUPS[gk].get(k, 0.0), used=g.get(k, 0.0)))
     for k, v in cfg["unit_costs"].items():
         if v != D.UNIT_COSTS[k]:
             out.append(dict(item=f"unit_costs.{k}", default=D.UNIT_COSTS[k], used=v))
-    if "list_map" in cfg:
-        sp = any(is_multi_comparator(g) for g in cfg["groups"].values())
-        out += T.modified_mapping(cfg, T.default_list_types("single_port" if sp else "multiport"))
     return out
 
 
@@ -182,7 +179,7 @@ def ceiling_cases(g):
 
 
 def cases_per_session(g):
-    return g["cases_per_list"] / g["list_sessions"]
+    return g.get("cases_per_session") or g["cases_per_list"] / g["list_sessions"]
 
 
 def fortnights_per_year(cfg):
@@ -357,6 +354,13 @@ def fortnight_grid(cfg, plan):
             i += 2
         else:
             i += 1
+    # all-day lists that found no free day (for example, Friday has one session) take any two free sessions
+    while full:
+        free = [x for x in slots if x["group"] is None]
+        if len(free) < 2:
+            break
+        k = full.pop(0)
+        free[0]["group"] = free[1]["group"] = k
     for slot in slots:
         if slot["group"] is None and half:
             slot["group"] = half.pop(0)
@@ -560,10 +564,6 @@ def run(cfg):
                     shared_fill=None)
         for msg in tsum["issues"]:
             warnings.append(f"Template: {msg}")
-        nm = T.not_modelled_key(cfg)
-        if template_cases.get(nm, 0) >= 0.5:
-            warnings.append(f"{template_cases[nm]:,.0f} templated cases a year map to no modelled procedure: "
-                            "they are costed but carry no 30-day benefit.")
     elif fixed is not None:
         plan = normalise_plan(cfg, {})
         dc = {k: dict(dedicated=0.0, raw_dedicated=0.0, shared=0.0, shared_sessions=0.0,
@@ -609,7 +609,8 @@ def run(cfg):
                     why = "the template has no lists for it"
                 sched = f"{d['total']:,.0f} of {demand:,.0f} scheduled" if has_lists else "none scheduled"
                 warnings.append(f"{g['label']}: {unmet:,.0f} cases a year are not scheduled ({sched}); {why}.")
-            groups_out[k] = dict(label=g["label"], sessions_per_fortnight=tsum["group_sessions"][k],
+            groups_out[k] = dict(label=g["label"], benefit_modelled=g.get("benefit_modelled", True),
+                                 sessions_per_fortnight=tsum["group_sessions"][k],
                                  ceiling=demand, dedicated_cases=d["total"], shared_cases=0.0,
                                  template_cases=tc, planned_cases=d["total"], unmet_cases=unmet, list_fill=fill)
             continue
@@ -633,13 +634,18 @@ def run(cfg):
             sched = (f"{d['total']:,.0f} of {ceiling_cases(g):,.0f} scheduled" if has_lists
                      else "none scheduled")
             warnings.append(f"{g['label']}: {unmet:,.0f} cases a year are not scheduled ({sched}); {why}.")
-        groups_out[k] = dict(label=g["label"], sessions_per_fortnight=plan.get(k, 0),
+        groups_out[k] = dict(label=g["label"], benefit_modelled=g.get("benefit_modelled", True),
+                             sessions_per_fortnight=plan.get(k, 0),
                              ceiling=ceiling_cases(g), dedicated_cases=d["dedicated"],
                              shared_cases=d["shared"], planned_cases=d["total"], unmet_cases=unmet,
                              list_fill=fill)
 
-    if use_template and cfg.get("demand_check", True):
-        warnings.extend(split_mismatch_warnings(cfg, groups_out, thr))
+    nm_cases = {k: v["planned_cases"] for k, v in groups_out.items()
+                if not cfg["groups"][k].get("benefit_modelled", True) and v["planned_cases"] >= 0.5}
+    if nm_cases:
+        warnings.append("30-day benefit not yet modelled for " + ", ".join(
+            f"{cfg['groups'][k]['label']} ({v:,.0f} cases a year)" for k, v in nm_cases.items())
+            + ": their benefit is a zero placeholder pending evidence, not a finding that the robot has no benefit.")
     cases_full = {k: v["planned_cases"] for k, v in groups_out.items()}
     yearly = []
     for t in range(1, pr["horizon_years"] + 1):
@@ -824,6 +830,12 @@ def spend_guardrails(cfg, plan, groups_out, util, yearly, warnings):
     capr = pr.get("max_cases_per_robot", 700)
     add("Robotic cases per robot per year", f"{per_robot:,.0f}", "green" if per_robot <= capr else "amber",
         f"Advisory: above {capr:,} a year, check surgeon numbers, staffing and whether the lists are achievable.")
+    nm = [cfg["groups"][k]["label"].split(" (")[0] for k, g in groups_out.items()
+          if not cfg["groups"][k].get("benefit_modelled", True) and g["planned_cases"] >= 0.5]
+    add("Procedures with 30-day benefit not yet modelled", (", ".join(nm) if nm else "None"),
+        "amber" if nm else "green",
+        "Their 30-day benefit is a zero placeholder pending evidence, not a finding that the robot has no benefit; "
+        "patient consequences and cost per outcome understate them.")
     add("Robot utilisation (booked sessions)", f"{util:.0%}",
         "green" if util >= 0.85 else "amber" if util >= pr["low_utilisation_warning"] else "red",
         "Green 85% or more; red below 75%.")
@@ -917,8 +929,6 @@ def overrides_from_prior_rows(rows, platform):
 # ---------------------------------------------------------------------------
 def describe_item(cfg, item):
     parts = item.split(".")
-    if parts[0] == "list_map":
-        return f"Template mapping: {T.label_of(cfg, parts[1])}, {parts[2]} cases"
     if parts[0] == "unit_costs":
         return D.UNIT_COST_LABELS.get(parts[1], parts[1].replace("_", " "))
     g = cfg["groups"].get(parts[0]) or D.PROCEDURE_GROUPS.get(parts[0]) or D.SP_GROUPS.get(parts[0])
@@ -932,7 +942,16 @@ def describe_item(cfg, item):
 
 
 def fmt_value(v):
-    """Readable value for a changed assumption (numbers or mapping text)."""
+    """Readable value for a changed assumption."""
+    if isinstance(v, bool):
+        return "yes" if v else "no"
+    return v if isinstance(v, str) else f"{v:g}"
+
+
+def fmt_value(v):
+    """Readable value for a changed assumption."""
+    if isinstance(v, bool):
+        return "yes" if v else "no"
     return v if isinstance(v, str) else f"{v:g}"
 
 

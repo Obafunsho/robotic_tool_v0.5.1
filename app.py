@@ -22,6 +22,7 @@ import defaults as D
 import engine as E
 import inputs_io as IO
 import register as RG
+import register_xlsx as RX
 import sensitivity as S
 import templates as T
 
@@ -94,7 +95,7 @@ if ss.get("pending_case") is not None:
 
 defaults = dict(w_hospital=IO.HOSPITAL_LABELS["medium"], w_robots=1, w_platform="platform_b",
                 w_price_mode="list", w_central=0, w_evidence="central", w_capvalue=False,
-                w_prost=PROSTATE_OPTIONS[0], w_basis="per_robot", w_variant="standard", w_maxcases=3,
+                w_prost=PROSTATE_OPTIONS[0], w_basis="per_robot", w_variant="standard",
                 w_demandcheck=True, w_realisation=100)
 for k, v in defaults.items():
     ss.setdefault(k, v)
@@ -122,7 +123,6 @@ pf_default = D.PLATFORMS[platform]
 proc_set = pf_default.get("procedure_set", "multiport")
 variant = st.sidebar.radio("Starting template", list(D.TEMPLATE_VARIANTS), key="w_variant",
                            format_func=lambda k: D.TEMPLATE_VARIANTS[k])
-maxcases = st.sidebar.number_input("Maximum cases per session", min_value=1, max_value=6, step=1, key="w_maxcases")
 realisation = st.sidebar.number_input("Templated cases that go ahead (%)", min_value=50, max_value=100, step=1,
                                       key="w_realisation",
                                       help="Allows for cancellations and under-runs. 100% means every templated "
@@ -170,18 +170,12 @@ loaded = ss.get("loaded_case")
 loaded_cfg = loaded["configuration"] if loaded else {}
 same = loaded and loaded_cfg.get("preset") == preset and loaded_cfg.get("platform") == platform
 loaded_groups = loaded_cfg.get("groups", {}) if same else {}
-loaded_map = loaded_cfg.get("list_map", {}) if same else {}
 try:
-    base_cfg = E.build_config(preset, platform, evidence, overrides={"groups": loaded_groups, "list_map": loaded_map},
-                              template=None)
+    base_cfg = E.build_config(preset, platform, evidence, overrides={"groups": loaded_groups}, template=None)
 except ValueError:
     base_cfg = E.build_config(preset, platform, evidence, template=None)
 key_sfx = f"{preset}-{proc_set}-{ss['load_count']}"
-lt_keys = list(base_cfg["list_map"])
-lt_label = {k: base_cfg["list_map"][k]["label"] for k in lt_keys}
-lt_from_label = {v: k for k, v in lt_label.items()}
-group_label = {k: g["label"] for k, g in base_cfg["groups"].items() if k not in D.NOT_MODELLED}
-group_from_label = {v: k for k, v in group_label.items()}
+proc_keys = T.procedure_keys(base_cfg)
 
 # the template grid: regenerate when the starting point changes; a just-loaded
 # case keeps its own template
@@ -196,11 +190,11 @@ ss["grid_key"] = grid_key
 
 
 def grid_to_df(robot_rows):
-    return pd.DataFrame(T.to_ui_rows(robot_rows, lt_label))
+    return pd.DataFrame(T.to_ui_rows(base_cfg, robot_rows), columns=T.UI_COLUMNS)
 
 
 def df_to_grid(df):
-    return T.from_ui_rows(df.to_dict("records"), lt_from_label)
+    return T.from_ui_rows(base_cfg, df.to_dict("records"))
 
 
 # ---------------------------------------------------------------------------
@@ -208,24 +202,23 @@ def df_to_grid(df):
 # ---------------------------------------------------------------------------
 with tab_in:
     st.subheader("Two-week theatre template")
-    st.write("Fill in each robot's template as you would for a real two-week block. For each session choose a "
-             "list type and the cases on it: major, medium or minor cases, 'Continuing' for a case running on from "
-             "the previous session, or 'Closed'. The tool extrapolates the fortnight to a year.")
-    st.caption("Standard hours are weekday AM and PM; a blank standard session is open but unbooked. Evenings and "
-               "weekends are blank by default and count only when you book them (choose 'Empty' to offer one "
-               "without booking it). Friday PM is kept for maintenance. Utilisation is booked sessions divided by "
-               "available sessions.")
-    case_opts = T.case_options(maxcases)
+    st.write("Fill in each robot's template as you would for a real two-week block: choose one procedure for "
+             "each session, or leave it as 'Unfilled session'. The tool works out the cases from each procedure's "
+             "complexity and extrapolates the fortnight to a year.")
+    st.caption("Sessions 1 and 2 on weekdays are standard hours: an unfilled one is open but unbooked. Session 3 and "
+               "weekend sessions count only when you book them. Friday session 2 is kept for maintenance. "
+               "Whole-day procedures (radical cystectomy, liver, oesophagogastric and pancreatoduodenectomy) need "
+               "both session 1 and session 2 of a day. Utilisation is booked sessions divided by available sessions.")
+    opts = T.options(base_cfg)
     edited = []
     for rb in range(robots):
         rows = ss["grid"][rb] if rb < len(ss["grid"]) else T.empty_robot()
         st.markdown(f"**Robot {rb + 1}**")
-        colcfg = {"Day": st.column_config.TextColumn(disabled=True, width="small")}
-        for s in D.SESSIONS:
-            lab = D.SESSION_LABELS[s]
-            colcfg[f"{lab} list"] = st.column_config.SelectboxColumn(
-                options=T.ui_options([""] + [lt_label[k] for k in lt_keys]))
-            colcfg[f"{lab} cases"] = st.column_config.SelectboxColumn(options=T.ui_options(case_opts))
+        colcfg = {"Week": st.column_config.NumberColumn(disabled=True, width=60),
+                  "Day": st.column_config.TextColumn(disabled=True, width=60)}
+        for s_ in D.SESSIONS:
+            colcfg[D.SESSION_LABELS[s_]] = st.column_config.SelectboxColumn(options=opts, required=True,
+                                                                           width=320)
         df = st.data_editor(grid_to_df(rows), key=f"grid-{rb}-{ss['grid_version']}", hide_index=True,
                             width="stretch", height=36 * 15, column_config=colcfg, num_rows="fixed")
         edited.append(df_to_grid(df))
@@ -292,22 +285,50 @@ with tab_in:
                                 disabled=["group", "Procedure", "Source"],
                                 column_config={"group": None, "Extra income per case (£)": st.column_config.NumberColumn(step=50)})
 
-    with st.expander("Template mapping: what major, medium and minor mean (advanced)"):
-        st.write("Each list type's tiers count as the procedures shown, split by the shares given. Leave the "
-                 "procedure blank for 'not modelled' (costed, no 30-day benefit). Shares within a tier must add up "
-                 "to 1. Changes are flagged in every output.")
-        mrows = [dict(list_type=r["list_type"], tier=r["tier"], **{"List type": lt_label[r["list_type"]],
-                                                                  "Tier": r["tier"].capitalize(),
-                                                                  "Counts as": group_label.get(r["group"], "") or T.BLANK,
-                                                                  "Share": r["share"]})
-                 for r in T.mapping_rows(base_cfg)]
-        map_ed = st.data_editor(pd.DataFrame(mrows), key=f"map-{key_sfx}", hide_index=True, width="stretch",
-                                num_rows="dynamic", disabled=["list_type", "tier"],
-                                column_config={"list_type": None, "tier": None,
-                                               "List type": st.column_config.SelectboxColumn(options=[lt_label[k] for k in lt_keys]),
-                                               "Tier": st.column_config.SelectboxColumn(options=[t.capitalize() for t in D.TIERS]),
-                                               "Counts as": st.column_config.SelectboxColumn(options=T.ui_options([""] + list(group_label.values()))),
-                                               "Share": st.column_config.NumberColumn(min_value=0.0, max_value=1.0, step=0.05)})
+    with st.expander("Procedures: complexity and cases per session (advanced)"):
+        st.write("Cases per session follow each procedure's complexity (High 1, Medium 1.5, Low 3; a whole-day "
+                 "procedure 0.5, so one case across two sessions). Change them here; changes are flagged in every "
+                 "output. Changing complexity or whole day resets cases per session to the default unless you "
+                 "also change cases per session.")
+        prow = [{"group": k, "Specialty": base_cfg["groups"][k]["specialty"], "Procedure": base_cfg["groups"][k]["label"],
+                 "Complexity": base_cfg["groups"][k]["complexity"],
+                 "Cases per session": float(base_cfg["groups"][k]["cases_per_session"]),
+                 "Whole day": bool(base_cfg["groups"][k].get("whole_day")),
+                 "30-day benefit": "Modelled" if base_cfg["groups"][k].get("benefit_modelled", True)
+                 else "Not yet modelled"} for k in proc_keys]
+        proc_ed = st.data_editor(pd.DataFrame(prow), key=f"procs-{key_sfx}", hide_index=True, width="stretch",
+                                 disabled=["group", "Specialty", "Procedure", "30-day benefit"],
+                                 column_config={"group": None,
+                                                "Complexity": st.column_config.SelectboxColumn(
+                                                    options=list(D.COMPLEXITY_CASES), required=True),
+                                                "Cases per session": st.column_config.NumberColumn(
+                                                    min_value=0.1, max_value=6.0, step=0.5),
+                                                "Whole day": st.column_config.CheckboxColumn()})
+        st.caption("'Not yet modelled' means the 30-day benefit is a zero placeholder pending evidence, not a "
+                   "finding that the robot has no benefit.")
+
+    with st.expander("Assumptions register for clinical review (Excel)"):
+        st.write("Download the full register: one row per procedure and assumption, with value, source, evidence "
+                 "grade and status, and columns for the reviewer's decision (agree, change to, needs evidence) and "
+                 "comment. ID and Value are locked. Load the completed file to apply the changes.")
+        st.download_button("Download the assumptions register (.xlsx)", RX.export(),
+                           file_name=f"assumptions_register_v{D.ENGINE_VERSION}.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        reg_up = st.file_uploader("Load a reviewed register (.xlsx)", type=["xlsx"], key="reg_upload")
+        if reg_up is not None and ss.get("last_reg_upload") != reg_up.file_id:
+            ss["last_reg_upload"] = reg_up.file_id
+            ss["register_review"] = RX.load(reg_up.getvalue())
+        review = ss.get("register_review")
+        if review is None and loaded and loaded_cfg.get("register_review"):
+            review = ss["register_review"] = loaded_cfg["register_review"]
+        if review:
+            st.write(f"Review loaded: {len(review['changes'])} changes applied, "
+                     f"{len(review['needs_evidence'])} items marked 'needs evidence'.")
+            for e in review.get("errors", []):
+                st.warning(e)
+            if st.button("Remove the loaded review"):
+                ss["register_review"] = None
+                st.rerun()
 
     with st.expander("Clinical assumptions at 30 days (advanced)"):
         st.write("Reductions per case, robotic versus each comparator. 'Share' is the proportion of these patients "
@@ -337,24 +358,27 @@ if "prostatectomy" in group_over:
         group_over["prostatectomy"].update(BC.PROSTATE_ELSEWHERE["prostatectomy"])
     elif group_over["prostatectomy"].get("p_robot_elsewhere", 0) >= 1:
         group_over["prostatectomy"].update(p_open=1.0, p_robot_elsewhere=0.0)
-map_rows = []
-for r in map_ed.to_dict("records"):
-    if not r.get("List type"):
-        continue
-    map_rows.append(dict(list_type=lt_from_label.get(r["List type"], r.get("list_type")),
-                         tier=(r.get("Tier") or r.get("tier") or "major").lower(),
-                         group=group_from_label.get(T._clean(r.get("Counts as")), ""), share=float(r.get("Share") or 0)))
-list_map = T.list_map_from_rows(map_rows, base_cfg["list_map"])
-map_over = {lt: {t: list_map[lt][t] for t in D.TIERS} for lt in list_map
-            if any(list_map[lt][t] != base_cfg["list_map"][lt][t] for t in D.TIERS)}
-if loaded_map:
-    map_over = {**{lt: v for lt, v in loaded_map.items()}, **map_over}
+base_by_key = {k: base_cfg["groups"][k] for k in proc_keys}
+for r_ in proc_ed.to_dict("records"):
+    k, g0 = r_["group"], base_by_key[r_["group"]]
+    o = {}
+    cx, wd, cps = r_["Complexity"], bool(r_["Whole day"]), float(r_["Cases per session"] or 0)
+    if cx != g0["complexity"]:
+        o["complexity"] = cx
+    if wd != bool(g0.get("whole_day")):
+        o["whole_day"] = wd
+    if o and cps == g0["cases_per_session"]:
+        cps = D.default_cases_per_session(cx, wd)
+    if cps != g0["cases_per_session"]:
+        o["cases_per_session"] = cps
+    if o:
+        group_over.setdefault(k, {}).update(o)
 
 configuration = dict(preset=preset, robots=robots, platform=platform, evidence=evidence,
                      instrument_price=instrument_price, central_capital_per_robot=central,
                      groups=group_over, platform_overrides=pf_over, template=grid_now, template_variant=variant,
-                     list_map=map_over, demand_check=bool(demand_check),
-                     programme=dict(include_capacity_value=capacity_value, max_cases_per_session=int(maxcases),
+                     demand_check=bool(demand_check), register_review=ss.get("register_review"),
+                     programme=dict(include_capacity_value=capacity_value,
                                     realisation_factor=float(realisation) / 100))
 try:
     kw = BC.configure(dict(configuration=configuration))
@@ -378,6 +402,9 @@ with tab_out:
         c[1].metric("Open operations avoided", f"{y3['open_avoided']:,.0f}")
         c[2].metric("Bed-days released", f"{y3['bed_days']:,.0f}")
         c[3].metric("Serious events avoided", f"{y3['reoperations'] + y3['complications'] + y3['readmissions']:,.1f}")
+        nm_note = BC.not_modelled_note(res)
+        if nm_note:
+            note(nm_note)
 
         st.subheader("Cost per outcome (five years)")
         c = st.columns(4)
@@ -438,12 +465,14 @@ with tab_out:
         prow = []
         for k, go in res["groups"].items():
             if go.get("template_cases", 0) >= 0.5 or go["unmet_cases"] >= 0.5:
-                prow.append({"Procedure": go["label"], "Sessions per fortnight": round(go["sessions_per_fortnight"], 1),
+                prow.append({"Procedure": go["label"],
+                             "30-day benefit": "Modelled" if go.get("benefit_modelled", True) else "Not yet modelled",
+                             "Sessions per fortnight": round(go["sessions_per_fortnight"], 1),
                              "Cases on template (year)": round(go.get("template_cases", 0)),
                              "Cases delivered": round(go["planned_cases"]), "Unmet demand": round(go["unmet_cases"])})
         st.dataframe(pd.DataFrame(prow), width="stretch", hide_index=True)
         if res["input_mode"] == "template":
-            tints = {k: LT_TINTS[i % len(LT_TINTS)] for i, k in enumerate(cfg["list_map"])}
+            tints = {k: LT_TINTS[i % len(LT_TINTS)] for i, k in enumerate(T.procedure_keys(cfg))}
             for rb in range(1, cfg["robots"] + 1):
                 cells = [x for x in res["grid"] if x["robot"] == rb]
                 table, colours = {}, {}
@@ -451,9 +480,10 @@ with tab_out:
                     r_ = f"Week {x['week']} {x['day']}"
                     col = D.SESSION_LABELS[x["session"]]
                     table.setdefault(r_, {})[col] = BC.cell_text(cfg, x)
-                    colours.setdefault(r_, {})[col] = tints.get(x["list_type"], "") if x["status"] == "booked" else ""
-                tdf = pd.DataFrame(table).T[["AM", "PM", "Evening"]]
-                cdf = pd.DataFrame(colours).T[["AM", "PM", "Evening"]]
+                    colours.setdefault(r_, {})[col] = tints.get(x["procedure"], "") if x["status"] == "booked" else ""
+                cols = [D.SESSION_LABELS[s_] for s_ in D.SESSIONS]
+                tdf = pd.DataFrame(table).T[cols]
+                cdf = pd.DataFrame(colours).T[cols]
                 st.markdown(f"**Robot {rb}**")
                 st.dataframe(tdf.style.apply(lambda _: cdf.map(lambda v: f"background-color:{v}" if v else ""),
                                              axis=None), width="stretch", height=36 * 15)
