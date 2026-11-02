@@ -182,3 +182,13 @@ def test_plain_theme_arial_black_text_and_no_emoji():
     assert conf["theme"]["textColor"] == "#0B0C0C"
     src = (root / "app.py").read_text(encoding="utf-8")
     assert "NHS logo" not in src and not re.search("[\\U0001F300-\\U0001FAFF\\u2600-\\u27BF]", src)
+
+
+def test_tariff_field_label():
+    at = _app()
+    tar = next(df for df in at.dataframe if df.proto.editing_mode and
+               "Tariff uplift (difference over existing tariff) (£ per case)" in df.value.columns)
+    v = tar.value
+    col = "Tariff uplift (difference over existing tariff) (£ per case)"
+    assert float(v[v["Procedure"] == "Radical prostatectomy"][col].iloc[0]) == 3000.0
+    assert (v[v["Procedure"] != "Radical prostatectomy"][col] == 0).all()

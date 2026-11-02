@@ -1,5 +1,5 @@
 # Worked example: Medium DGH (<800 beds), 1 robot (example rota), Platform B: established multi-port (purchase), central evidence
-Engine version 0.8.0. All inputs are placeholders for expert review. The hospital type only selects the example rota.
+Engine version 1.0.0. All inputs are placeholders for expert review. The hospital type only selects the example rota.
 
 ## Step 1 to 2. Two-week robot rota
 Each robot has 14 days. For each day the trust sets the sessions available (0, 2 or 3); for each session, a procedure and its cases (1 to 4, or 'cont.' for a case continuing from the previous session).

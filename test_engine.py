@@ -425,12 +425,29 @@ def test_gynaecology_benefit_kept_and_lacc_note():
     assert "LACC trial" in all_text(blocks) and "about 90% of hysterectomies are benign" in all_text(blocks)
 
 
-def test_prostatectomy_tariff_note():
-    assert D.PROCEDURE_GROUPS["prostatectomy"]["tariff_uplift"] == 0
-    assert "A robotic tariff uplift exists" in D.TARIFF_SOURCES["prostatectomy"]
-    blocks, _ = BC.build_blocks({"cover": {}, "configuration": {"preset": "large_1", "robots": 1,
-                                                                 "platform": "platform_b"}}, include_charts=False)
-    assert "A robotic tariff uplift exists for radical prostatectomy" in all_text(blocks)
+def test_prostatectomy_tariff_uplift_default_3000():
+    g = D.PROCEDURE_GROUPS["prostatectomy"]
+    assert g["tariff_uplift"] == 3000.0
+    assert all(v["tariff_uplift"] == 0 for k, v in D.PROCEDURE_GROUPS.items() if k != "prostatectomy")
+    assert "LB69Z" in D.TARIFF_SOURCES["prostatectomy"] and "averaged to £3,000" in D.TARIFF_SOURCES["prostatectomy"]
+    # cash case only: income = 3,000 x prostatectomy cases; economic view and cost per outcome unchanged
+    r = E.run(E.build_config("large_1"))
+    zero = E.run(E.build_config("large_1", overrides={"groups": {"prostatectomy": {"tariff_uplift": 0.0}}}))
+    for y in r["yearly"]:
+        assert y["tariff_income"] == pytest.approx(3000 * y["by_group"]["prostatectomy"]["cases"])
+        assert y["net_cash_cost"] == pytest.approx(y["extra_cost"] - y["tariff_income"])
+    assert r["economic"]["net_present_cost"] == pytest.approx(zero["economic"]["net_present_cost"])
+    assert r["totals"]["cost_per_bed_day_released"] == pytest.approx(zero["totals"]["cost_per_bed_day_released"])
+    assert not any(m["item"] == "prostatectomy.tariff_uplift" for m in r["user_modified"])
+    row = next(x for x in RX.register_rows() if x["id"] == "prostatectomy.tariff_uplift")
+    assert row["raw"] == 3000.0 and row["grade"] == "Clinical lead input" and row["status"] == "Clinical lead input"
+    assert row["assumption"].startswith("Tariff uplift (difference over existing tariff)")
+    text = all_text(BC.build_blocks({"cover": {}, "configuration": {"preset": "large_1", "robots": 1,
+                                                                     "platform": "platform_b"}},
+                                    include_charts=False)[0])
+    assert "Less tariff uplift (difference over existing tariff)" in text
+    assert "default tariff uplift of £3,000 per case" in text
+    assert "Extra income per case" not in text and "extra tariff income" not in text.lower()
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 # Worked example: Large hospital (>=800 beds), 2 robots (example rota), Platform B: established multi-port (purchase), central evidence
-Engine version 0.8.0. All inputs are placeholders for expert review. The hospital type only selects the example rota.
+Engine version 1.0.0. All inputs are placeholders for expert review. The hospital type only selects the example rota.
 
 ## Step 1 to 2. Two-week robot rota
 Each robot has 14 days. For each day the trust sets the sessions available (0, 2 or 3); for each session, a procedure and its cases (1 to 4, or 'cont.' for a case continuing from the previous session).
@@ -56,7 +56,7 @@ All groups combined:
 - Extra cost to the trust = £2,689,252 (£2,988 per case). Nothing is deducted for 30-day cost avoided.
 - 30-day cost avoided (economic view, not cash) = bed-days x £400 + conversions x £1,000 + reoperations x £6,000 + complications x £4,000 + readmissions x £2,500 = £455,568
 - Extra cost less cost avoided = £2,233,684
-- Extra tariff income (cash case only) = £0; net cash cost = £2,689,252
+- Extra tariff income (cash case only) = £607,500; net cash cost = £2,081,752
 
 ## Five-year view
 | Year | Cases | Bed-days released | Extra cost | Cost avoided (not cash) | Extra cost less cost avoided |

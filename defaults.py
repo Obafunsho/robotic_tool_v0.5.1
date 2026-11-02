@@ -18,7 +18,7 @@ Anti-double-counting rule:
   except readmission, which is a separate spell and is costed in full.
 """
 
-ENGINE_VERSION = "0.8.0"
+ENGINE_VERSION = "1.0.0"
 
 # ---------------------------------------------------------------------------
 # Procedures (clinical lead's list of 17; v0.8 values after the literature review)
@@ -29,7 +29,8 @@ ENGINE_VERSION = "0.8.0"
 #                     (the rest laparoscopic)
 # p_robot_elsewhere : share that would have robotic surgery at another centre (prostatectomy
 #                     sensitivity scenario)
-# tariff_uplift     : extra income per robotic case over what the trust would earn anyway
+# tariff_uplift     : tariff uplift (difference over existing tariff) per robotic case; see
+#                     TARIFF_DEFAULTS (radical prostatectomy £3,000; others £0)
 #                     (cash case only)
 # origin            : how the values were carried over, merged or split (v0.7) and reviewed (v0.8)
 # Sources, evidence grades and statuses for every reviewed value: evidence_review.py
@@ -400,7 +401,7 @@ FIELD_LABELS = {
     "los": "bed-days saved", "conv": "conversions avoided", "reop": "returns to theatre avoided",
     "comp": "major complications avoided", "readm": "readmissions avoided",
     "extra_minutes": "extra theatre minutes", "share": "share",
-    "tariff_uplift": "extra tariff income per robotic case",
+    "tariff_uplift": "tariff uplift (difference over existing tariff)",
     "cases_per_session": "cases per session", "whole_day": "whole-day procedure",
 }
 UNIT_COST_LABELS = {
@@ -464,9 +465,16 @@ EXAMPLE_ROTAS = {
 
 # Tariff (cash case only). Extra income per robotic case over what the trust would
 # earn for the same patient without the robot. All groups default to £0.
+TARIFF_FIELD_LABEL = "Tariff uplift (difference over existing tariff)"
+# Default tariff uplift per robotic case (GBP). Only the difference over the tariff the trust
+# would earn anyway counts; it enters the trust's cash case only.
+TARIFF_DEFAULTS = {"prostatectomy": 3000.0}
 TARIFF_SOURCES = {
-    "prostatectomy": ("A robotic tariff uplift exists: robotic prostatectomy groups to a robotic-specific HRG in the NHS "
-                      "Payment Scheme. Left at £0 until the figure is supplied: enter the 2026/27 unit price for that "
-                      "HRG minus the price the same patient's open operation would earn."),
+    "prostatectomy": ("Clinical lead, from the robotic urological surgery HRG (e.g. LB69Z): an uplift of roughly "
+                      "£2,700 over the open and £3,400 over the laparoscopic tariff, averaged to £3,000. The raw "
+                      "robotic tariff is about £8,000; only the difference over existing tariffs counts."),
 }
+TARIFF_GRADES = {"prostatectomy": "Clinical lead input"}
+for _k, _v in TARIFF_DEFAULTS.items():
+    PROCEDURE_GROUPS[_k]["tariff_uplift"] = _v
 DEFAULT_TARIFF_SOURCE = "No robotic price difference identified: £0."

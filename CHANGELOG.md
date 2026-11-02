@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.0 (November 2026)
+
+The clinical lead's final change.
+- Radical prostatectomy now has a default tariff uplift of £3,000 per case. Source (clinical lead input): the robotic urological surgery HRG (e.g. LB69Z) gives an uplift of roughly £2,700 over the open and £3,400 over the laparoscopic tariff, averaged to £3,000. The raw robotic tariff is about £8,000, but only the difference over existing tariffs counts.
+- All other procedures remain at £0. The value stays editable and enters the trust's cash case only: it is excluded from the economic view (net present cost) and from cost per outcome.
+- The field is renamed "Tariff uplift (difference over existing tariff)" wherever it appears (website, register and Word business case), so that it is not mistaken for the full tariff.
+- Effect on the examples: the large-hospital example now shows the uplift reducing the trust's net cash cost. The medium DGH example has no prostatectomy, so it shows no uplift.
+- Tests: 314. New tests cover the £3,000 default (cash case only; economic view unchanged) and the new field label on the website, in the register and in the business case.
+
 ## 0.8.0 (November 2026)
 
 The clinical lead's final decisions: assumptions from his literature review, a simpler rota input, and fewer moving parts.

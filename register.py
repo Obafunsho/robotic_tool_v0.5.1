@@ -159,9 +159,10 @@ def detail_rows(cfg):
         for field, name, unit in EFFECTS:
             src, grade, status = _reviewed(f"{k}.{field}", _effect_source(k, g, field))
             add(f"{k}.{field}", sp, lab, name, float(g[field]), unit, src, grade, status, owner)
-        add(f"{k}.tariff_uplift", sp, lab, "Extra tariff income per robotic case (cash case only)",
+        add(f"{k}.tariff_uplift", sp, lab, f"{D.TARIFF_FIELD_LABEL} per robotic case (cash case only)",
             float(g.get("tariff_uplift", 0.0)), "£ per case", D.TARIFF_SOURCES.get(k, D.DEFAULT_TARIFF_SOURCE),
-            "Policy (NHS Payment Scheme)" if k in D.TARIFF_SOURCES else "None", "Placeholder", "[Finance lead]")
+            D.TARIFF_GRADES.get(k, "None"), "Clinical lead input" if k in D.TARIFF_SOURCES else "Placeholder",
+            "[Finance lead]")
 
     uc, pr = cfg["unit_costs"], cfg["programme"]
     fin, sro = "[Finance lead]", "[Senior responsible owner]"
@@ -228,15 +229,16 @@ def rows(cfg):
                                                       sorted(cnt)[0]), owner)
         if k in D.TARIFF_SOURCES:
             val = g.get("tariff_uplift", 0.0)
-            add(f"{g['label']}: extra tariff income per case", f"£{val:,.0f}", D.TARIFF_SOURCES[k],
-                "Policy (NHS Payment Scheme)", "Placeholder" if val == 0 else "Trust input", "[Finance lead]")
+            add(f"{g['label']}: {D.TARIFF_FIELD_LABEL.lower()} per case", f"£{val:,.0f}", D.TARIFF_SOURCES[k],
+                D.TARIFF_GRADES.get(k, "None"),
+                "Clinical lead input" if val == D.TARIFF_DEFAULTS.get(k) else "Trust input", "[Finance lead]")
 
     pf, pr, uc = cfg["platform"], cfg["programme"], cfg["unit_costs"]
     add("Two-week robot rota (sessions and cases)", "Example rota" if cfg.get("template_variant") == "example"
         else "Entered by the trust", "Trust theatre plan", "Local", "Trust input", "[Theatres lead]")
     add("Share of rota cases that go ahead", f"{pr.get('realisation_factor', 1.0):.0%}",
         "None found (cancellations and under-runs)", "None", "Placeholder", "[Theatres lead]")
-    add("Extra tariff income, all other procedures", "£0", D.DEFAULT_TARIFF_SOURCE + " Not checked per HRG.",
+    add(f"{D.TARIFF_FIELD_LABEL}, all other procedures", "£0", D.DEFAULT_TARIFF_SOURCE + " Not checked per HRG.",
         "None", "Placeholder", "[Finance lead]")
     add("Tariff: patients would otherwise be treated at this trust", "Assumed",
         "If they would otherwise go to another provider, the trust gains the whole tariff and that provider "

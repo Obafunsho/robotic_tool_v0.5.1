@@ -1,10 +1,10 @@
-# Robotic programme decision engine (v0.8.0)
+# Robotic programme decision engine (v1.0.0)
 
 A transparent 30-day cost-consequence tool for NHS trusts deciding which robotic platform to procure, how many to buy, and how to fill them. No QALYs and no ICERs are computed, by design. The Word business case is the main output. Every output is marked as a draft until the assumptions register (Appendix D of the business case) has been signed off. The tool uses a plain, NHS-familiar style but is not an NHS product and uses no NHS name or logo.
 
 ## Quick start
 
-`pip install -r requirements.txt`, then `python -m pytest -q` (313 tests), then `streamlit run app.py`. The "Business case" tab downloads the Word document; inputs can be saved as a .json file and reloaded from the sidebar. To publish the tool, see DEPLOY.md.
+`pip install -r requirements.txt`, then `python -m pytest -q` (314 tests), then `streamlit run app.py`. The "Business case" tab downloads the Word document; inputs can be saved as a .json file and reloaded from the sidebar. To publish the tool, see DEPLOY.md.
 
 Without the website: `python3 business_case.py examples/example_case.json out.docx`. Example outputs and three worked examples are in `examples/`.
 
@@ -33,7 +33,7 @@ The 17 procedures come from the clinical lead's list. From v0.8 their 30-day val
 3. Counterfactual: of these cases, p_open would have been open without the robot, p_robot_elsewhere robotic elsewhere (prostatectomy sensitivity scenario), the rest laparoscopic.
 4. Consequences: bed-days, conversions, returns to theatre, major complications and readmissions avoided, scaled by the evidence setting and learning curve.
 5. Extra cost to the trust (the headline): platform + instruments + sterile services + surgical first assistant + extra theatre time + one-off implementation and theatre works. Nothing is deducted for 30-day cost avoided.
-6. Tariff (cash case only): extra income per robotic case over what the trust would earn for the same patient without the robot, per procedure; net cash cost = extra cost − tariff income. Tariff is a transfer within the NHS, so it is excluded from cost per outcome and the economic view.
+6. Tariff uplift (difference over existing tariff), cash case only: per robotic case, the difference over what the trust would earn for the same patient without the robot (radical prostatectomy £3,000 by default, others £0); net cash cost = extra cost − tariff uplift income. Tariff is a transfer within the NHS, so it is excluded from cost per outcome and the economic view.
 7. Economic view: extra cost less 30-day cost avoided, discounted at 3.5%, capital in year 0, residual value credited at year 5.
 8. Break-even: searched only up to every available session booked at the rota's case mix.
 
@@ -41,7 +41,7 @@ Outputs always show patient consequences first, then cost per outcome, then five
 
 ## Tariff
 
-All procedures default to £0. A robotic tariff uplift exists for radical prostatectomy (a robotic-specific HRG in the NHS Payment Scheme); it is left at £0 until the figure is supplied: enter the 2026/27 robotic HRG price minus the open-operation price. Also unresolved: whether elective income is paid at full unit price or under aligned payment and incentive, and the market forces factor.
+The input is labelled "Tariff uplift (difference over existing tariff)" so that it is not mistaken for the full tariff. Radical prostatectomy defaults to £3,000 per case (clinical lead, from the robotic urological surgery HRG, e.g. LB69Z: roughly £2,700 over the open and £3,400 over the laparoscopic tariff, averaged; the raw robotic tariff is about £8,000, but only the difference over existing tariffs counts). All other procedures default to £0. The value is editable and enters the trust's cash case only. Also unresolved: whether elective income is paid at full unit price or under aligned payment and incentive, and the market forces factor.
 
 ## Design and Streamlit limits
 
@@ -52,4 +52,4 @@ Plain, high-contrast layout familiar to NHS users: Arial, black text, simple tab
 
 ## Known limitations
 
-Many clinical values, discounts, several unit costs and the tariff remain placeholders or marked 'needs evidence'; the register lists each one. Complex abdominal wall repair uses 30-day assumptions set for ventral and incisional hernia (flagged); rectal resection, gynaecological oncology and lobectomy reuse carried-over values (flagged); six procedures have no modelled 30-day benefit yet. Evening and weekend sessions carry no staffing premium yet (v2 item 2). Long-term outcomes are not modelled.
+Many clinical values, discounts and several unit costs remain placeholders or marked 'needs evidence'; the register lists each one. Complex abdominal wall repair uses 30-day assumptions set for ventral and incisional hernia (flagged); rectal resection, gynaecological oncology and lobectomy reuse carried-over values (flagged); six procedures have no modelled 30-day benefit yet. Evening and weekend sessions carry no staffing premium yet (v2 item 2). Long-term outcomes are not modelled.

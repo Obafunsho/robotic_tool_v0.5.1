@@ -54,6 +54,7 @@ st.markdown("""
 STATUS_STYLE = {"Green": "background-color:#CCE2D8", "Amber": "background-color:#FFF2CC",
                 "Red": "background-color:#F6D7D2"}
 PROSTATE_OPTIONS = ["Open surgery", "Robotic surgery at another centre"]
+TARIFF_COL = f"{D.TARIFF_FIELD_LABEL} (£ per case)"
 HOSPITALS = {"medium": "Medium DGH (under 800 beds)", "large": "Large hospital (800 beds or more)"}
 
 
@@ -288,16 +289,16 @@ with tab_in:
                                               "specialty": "Procedure", "group": None, "comparator": None})
         st.caption("Complexity (High, Medium, Low) is descriptive only; cases come from the rota.")
 
-    with st.expander("Tariff: extra income per robotic case (cash case only)"):
+    with st.expander(f"{D.TARIFF_FIELD_LABEL}: per robotic case (cash case only)"):
         st.write("Enter only the difference over what the trust would earn for the same patient without the robot. "
                  "Tariff is a transfer within the NHS: it reduces the trust's cash cost but is excluded from the "
                  "economic view and from cost per outcome.")
         tar = pd.DataFrame([dict(group=k, Procedure=base_cfg["groups"][k]["label"],
-                                 **{"Extra income per case (£)": base_cfg["groups"][k].get("tariff_uplift", 0.0),
+                                 **{TARIFF_COL: base_cfg["groups"][k].get("tariff_uplift", 0.0),
                                     "Source": D.TARIFF_SOURCES.get(k, D.DEFAULT_TARIFF_SOURCE)}) for k in proc_keys])
         tar_ed = st.data_editor(tar, key=f"tariff-{key_sfx}", hide_index=True, width="stretch",
                                 disabled=["group", "Procedure", "Source"],
-                                column_config={"group": None, "Extra income per case (£)": st.column_config.NumberColumn(step=50)})
+                                column_config={"group": None, TARIFF_COL: st.column_config.NumberColumn(step=50)})
 
     with st.expander("Assumptions register for clinical review (Excel)"):
         st.write("Download the full register: one row per procedure and assumption, with value, source, evidence "
@@ -325,8 +326,8 @@ with tab_in:
 # ---------------------------------------------------------------------------
 group_over = {}
 for r_ in tar_ed.to_dict("records"):
-    if float(r_["Extra income per case (£)"] or 0) != base_cfg["groups"][r_["group"]].get("tariff_uplift", 0.0):
-        group_over.setdefault(r_["group"], {})["tariff_uplift"] = float(r_["Extra income per case (£)"] or 0)
+    if float(r_[TARIFF_COL] or 0) != base_cfg["groups"][r_["group"]].get("tariff_uplift", 0.0):
+        group_over.setdefault(r_["group"], {})["tariff_uplift"] = float(r_[TARIFF_COL] or 0)
 for k, o in E.overrides_from_prior_rows(pr_ed.to_dict("records")).items():
     changed = {f: v for f, v in o.items() if v != D.PROCEDURE_GROUPS[k].get(f)}
     if changed:
@@ -385,11 +386,11 @@ with tab_out:
         st.subheader("Five-year cost to the trust")
         c = st.columns(4)
         c[0].metric("Five-year extra cost (revenue)", gbpm(t["extra_cost"]))
-        c[1].metric("Less extra tariff income", gbpm(t["tariff_income"]))
+        c[1].metric("Less tariff uplift (difference over existing tariff)", gbpm(t["tariff_income"]))
         c[2].metric("Net cash cost to the trust", gbpm(t["net_cash_cost"]))
         c[3].metric("Capital funded by the trust", gbp(res["capital"]["trust_funded"]))
         fy = pd.DataFrame([{"Year": y["year"], "Cases": f"{y['cases']:,.0f}", "Bed-days released": f"{y['bed_days']:,.0f}",
-                            "Extra cost": gbp(y["extra_cost"]), "Tariff income": gbp(y["tariff_income"]),
+                            "Extra cost": gbp(y["extra_cost"]), "Tariff uplift": gbp(y["tariff_income"]),
                             "Net cash cost": gbp(y["net_cash_cost"]),
                             "30-day cost avoided (not cash)": gbp(y["offsets"])} for y in res["yearly"]])
         st.dataframe(fy, width="stretch", hide_index=True)

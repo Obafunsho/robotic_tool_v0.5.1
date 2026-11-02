@@ -141,8 +141,10 @@ LACC_NOTE = ("Outside the 30-day scope of this case: the LACC trial (Ramirez et 
              "survival after minimally invasive radical hysterectomy for early cervical cancer. The 30-day benefit is "
              "kept for the whole gynaecology population, as about 90% of hysterectomies are benign; case selection for "
              "cervical cancer should follow current guidance.")
-PROSTATE_TARIFF_NOTE = ("A robotic tariff uplift exists for radical prostatectomy (a robotic-specific HRG in the NHS "
-                        "Payment Scheme); it is left at £0 until the figure is supplied.")
+PROSTATE_TARIFF_NOTE = ("Radical prostatectomy carries a default tariff uplift of £3,000 per case: the difference "
+                        "between the robotic urological surgery HRG (e.g. LB69Z, about £8,000) and the tariffs the "
+                        "trust would earn anyway (about £2,700 less than robotic for open and £3,400 for laparoscopic "
+                        "surgery, averaged). Source: clinical lead. Only the difference counts, not the full tariff.")
 
 
 def not_modelled_note(r):
@@ -252,13 +254,13 @@ def build_blocks(case, include_charts=True):
     rows5 = [["Extra cost to the trust (revenue)"] + [gbpk(y["extra_cost"]) for y in r["yearly"]]
              + [gbpk(t["extra_cost"])]]
     if t["tariff_income"]:
-        rows5 += [["Less extra tariff income"] + [gbpk(-y["tariff_income"]) for y in r["yearly"]]
+        rows5 += [["Less tariff uplift (difference over existing tariff)"] + [gbpk(-y["tariff_income"]) for y in r["yearly"]]
                   + [gbpk(-t["tariff_income"])],
                   ["Net cash cost to the trust"] + [gbpk(y["net_cash_cost"]) for y in r["yearly"]]
                   + [gbpk(t["net_cash_cost"])]]
     add(dict(type="table", header=hdr, widths=[2626] + [1067] * 5 + [1065], rows=rows5, bold_last=True))
     add(dict(type="p", text=TARIFF_NOTE + (
-        "" if t["tariff_income"] else " No extra tariff income has been entered for this case.")
+        "" if t["tariff_income"] else " No tariff uplift applies to the procedures in this case.")
         + (" " + PROSTATE_TARIFF_NOTE if "prostatectomy" in booked else "")))
     cap = r["capital"]
     if pf["model"] == "purchase":
@@ -540,7 +542,7 @@ def build_blocks(case, include_charts=True):
     if t["tariff_income"]:
         add(dict(type="table", header=["Cash case"] + hdr[1:], widths=[2626] + [1067] * 5 + [1065], rows=[
             line("Extra cost to the trust", lambda y: y["extra_cost"]),
-            line("Less extra tariff income", lambda y: -y["tariff_income"]),
+            line("Less tariff uplift (difference over existing tariff)", lambda y: -y["tariff_income"]),
             line("Net cash cost to the trust", lambda y: y["net_cash_cost"])], bold_last=True))
     add(dict(type="p", text=TARIFF_NOTE))
     add(dict(type="table", header=["For information (not cash)"] + hdr[1:], widths=[2626] + [1067] * 5 + [1065], rows=[
@@ -622,11 +624,11 @@ def build_blocks(case, include_charts=True):
         "Complexity is descriptive; cases come from the rota. 'Not yet modelled' means a zero placeholder pending "
         "evidence; 'Neutral (clinical lead)' means the clinical lead set the 30-day effects to zero.")))
     add(dict(type="table", header=["Specialty", "Procedure", "Complexity", "30-day benefit"],
-             widths=[2000, 4400, 1100, 1526],
+             widths=[1900, 4250, 1350, 1526],
              rows=[[g["specialty"], g["label"], g["complexity"], D.BENEFIT_STATUS_LABELS[g["benefit_status"]]]
                    for g in sorted(cfg["groups"].values(), key=lambda x: x["label"].lower())], small=True))
-    add(dict(type="h3", text="Tariff: extra income per robotic case (cash case only)"))
-    add(dict(type="table", header=["Procedure", "Extra income per case", "Source"], widths=[3000, 1600, 4426],
+    add(dict(type="h3", text=f"{D.TARIFF_FIELD_LABEL}: per robotic case, cash case only"))
+    add(dict(type="table", header=["Procedure", D.TARIFF_FIELD_LABEL, "Source"], widths=[3000, 1600, 4426],
              rows=[[g["label"], gbp(g.get("tariff_uplift", 0.0)),
                     D.TARIFF_SOURCES.get(k, D.DEFAULT_TARIFF_SOURCE)]
                    for k, g in cfg["groups"].items() if k in booked or g.get("tariff_uplift")], small=True))
@@ -746,7 +748,8 @@ def main(case_path, out_path):
 
 
 TARIFF_NOTE = (
-    "Tariff: the income line counts only the difference over what the trust would earn for the same patients "
+    "Tariff: the tariff uplift (difference over existing tariff) counts only the difference over what the trust "
+    "would earn for the same patients "
     "without the robot, entered per procedure, and assumes those patients would otherwise be treated at this "
     "trust. It appears in the trust's cash case only. It is a transfer within the NHS, so it is excluded from the "
     "economic view (net present cost) and from the cost per outcome.")

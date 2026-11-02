@@ -15,7 +15,7 @@ This folder is a complete web application. The website, the calculations and the
 
 3. A browser opens at http://localhost:8501. Choose the configuration in the left panel, check the inputs, read the results, then open the "Business case" tab and press "Generate Word business case" to download the document.
 
-All 313 tests should pass before anything is put online. Package versions are pinned in `requirements.txt`; change them deliberately and re-run the tests.
+All 314 tests should pass before anything is put online. Package versions are pinned in `requirements.txt`; change them deliberately and re-run the tests.
 
 ## 2. Put it online
 
