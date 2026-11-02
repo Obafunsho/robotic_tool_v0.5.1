@@ -1,54 +1,45 @@
 """
-Two-week theatre template (v0.7): the main input.
+Two-week robot rota (v0.8): the main input, mirroring the clinical lead's rota.
 
-Each robot has 14 days (Monday to Sunday, twice) x 3 sessions ("AM session 1",
-"PM session 2", "PM session 3"). Each session holds ONE entry:
+Each robot has 14 days (Monday to Sunday, twice). For each day:
+  sessions    "Sessions available": 0, 2 or 3 (session 3 only on 3-session days)
+and for each session (AM, PM, Eve = sessions 1, 2, 3):
+  {s}_proc    procedure key, or "" for an unfilled session
+  {s}_cases   1, 2, 3 or 4, or "cont." for a case continuing from the previous session
+              with the same procedure (a case may span at most 3 sessions)
 
-  ""             "Unfilled session": open but unbooked in standard hours (weekday
-                 sessions 1 and 2); not in use for session 3 and weekends
-  procedure key  a listed procedure ("Specialty - Procedure" on screen)
-  "Maintenance"  not available (maintenance)
-  "Closed"       not available
+Utilisation = sessions booked / sessions available. A session is booked when it has a
+procedure. Cases come only from the rota; complexity is descriptive.
 
-Cases per booked session come from each procedure's cases_per_session (set by its
-complexity, editable). A whole-day procedure counts half a case per session and is
-flagged if it is booked in only one session of a day.
-
-Grid format (engine and saved inputs): a list with one entry per robot; each entry is
-a list of 14 row dicts with keys week, day, AM, PM, Eve.
+Grid format (engine and saved inputs): a list with one entry per robot; each entry is a
+list of 14 row dicts with keys week, day, sessions, AM_proc, AM_cases, PM_proc, PM_cases,
+Eve_proc, Eve_cases.
 """
 import copy
 
 import defaults as D
 
-DASH = "\u2013"          # en dash between specialty and procedure
+BLANK_CASES = "\u2013"      # en dash shown for an empty cases cell (avoids "None" on screen)
 
 
 # ---------------------------------------------------------------------------
 # Options and labels
 # ---------------------------------------------------------------------------
-def option_label(cfg, key):
-    g = cfg["groups"][key]
-    return f"{g['specialty']} {DASH} {g['label']}"
-
-
 def procedure_keys(cfg):
-    """Listed procedures in alphabetical order of procedure name (as in Aneel's list)."""
-    return sorted((k for k in cfg["groups"] if k not in D.NOT_MODELLED),
-                  key=lambda k: cfg["groups"][k]["label"].lower())
+    """Listed procedures in alphabetical order of procedure name (as in the clinical lead's list)."""
+    return sorted(cfg["groups"], key=lambda k: cfg["groups"][k]["label"].lower())
 
 
-def options(cfg):
-    """Dropdown options: unfilled first, procedures, then Maintenance and Closed."""
-    return [D.UNFILLED] + [option_label(cfg, k) for k in procedure_keys(cfg)] + ["Maintenance", "Closed"]
+def procedure_options(cfg):
+    return [D.UNFILLED] + [cfg["groups"][k]["label"] for k in procedure_keys(cfg)]
 
 
 def label_map(cfg):
-    return {option_label(cfg, k): k for k in procedure_keys(cfg)}
+    return {cfg["groups"][k]["label"]: k for k in procedure_keys(cfg)}
 
 
-def is_standard(day, session):
-    return day in D.WEEKDAYS and session in ("AM", "PM")
+def case_options():
+    return [BLANK_CASES] + D.CASE_OPTIONS
 
 
 def day_label(row):
@@ -62,9 +53,9 @@ def empty_robot():
     rows = []
     for w in (1, 2):
         for d in D.DAYS:
-            row = dict(week=w, day=d)
+            row = dict(week=w, day=d, sessions=D.DEFAULT_SESSIONS[d])
             for s in D.SESSIONS:
-                row[s] = "Maintenance" if (d == "Fri" and s == "PM") else ""
+                row[f"{s}_proc"], row[f"{s}_cases"] = "", ""
             rows.append(row)
     return rows
 
@@ -81,8 +72,24 @@ def resize(grid, robots):
     return g
 
 
+def example_rota(hospital, robots):
+    """The starting example rota for a hospital type ('medium' or 'large')."""
+    grid = empty_grid(robots)
+    for ri, spec in enumerate(D.EXAMPLE_ROTAS[hospital][:robots]):
+        for (w, d), entries in spec.items():
+            row = next(x for x in grid[ri] if x["week"] == w and x["day"] == d)
+            for s, (proc, cases) in zip(D.SESSIONS, entries):
+                row[f"{s}_proc"], row[f"{s}_cases"] = proc, str(cases)
+    return grid
+
+
+def available_sessions(row):
+    n = int(row.get("sessions", 0) or 0)
+    return D.SESSIONS[:n] if n in (2, 3) else []
+
+
 # ---------------------------------------------------------------------------
-# Summary: what the template books, per fortnight
+# Summary: what the rota books, per fortnight
 # ---------------------------------------------------------------------------
 def summarise(cfg, grid=None):
     grid = cfg["template"] if grid is None else grid
@@ -93,140 +100,114 @@ def summarise(cfg, grid=None):
     booked = available = 0
     for ri, robot in enumerate(grid):
         for row in robot:
-            day_count = {}
+            n = row.get("sessions", 0)
+            if n not in D.SESSIONS_AVAILABLE_OPTIONS:
+                issues.append(f"Robot {ri + 1}, {day_label(row)}: sessions available must be 0, 2 or 3; "
+                              "treated as 0.")
+            avail = available_sessions(row)
+            available += len(avail)
+            prev_proc, span = "", 0
             for s in D.SESSIONS:
-                entry = (row.get(s, "") or "").strip()
-                where = f"Robot {ri + 1}, week {row['week']} {row['day']} {D.SESSION_LABELS[s]}"
-                status, ncases, proc = "unused", 0.0, ""
-                if entry in ("Maintenance", "Closed"):
-                    status = entry.lower()
-                elif entry == "":
-                    status = "open" if is_standard(row["day"], s) else "unused"
-                elif entry in G:
-                    status, proc = "booked", entry
-                    ncases = G[entry]["cases_per_session"]
-                    cases[entry] += ncases
-                    sessions[entry] += 1
-                    day_count[entry] = day_count.get(entry, 0) + 1
+                where = f"Robot {ri + 1}, {day_label(row)} {D.SESSION_LABELS[s]}"
+                proc = (row.get(f"{s}_proc") or "").strip()
+                c = str(row.get(f"{s}_cases") or "").strip()
+                status, ncases = "unused", 0
+                if s not in avail:
+                    if proc or c:
+                        issues.append(f"{where}: not available on this day (sessions available "
+                                      f"{n}); entry ignored.")
+                    prev_proc, span = "", 0
+                elif not proc:
+                    status = "open"
+                    if c:
+                        issues.append(f"{where}: cases entered without a procedure; ignored.")
+                    prev_proc, span = "", 0
+                elif proc not in G:
+                    issues.append(f"{where}: '{proc}' is not a listed procedure; treated as unfilled.")
+                    status = "open"
+                    prev_proc, span = "", 0
                 else:
-                    issues.append(f"{where}: '{entry}' is not a listed procedure; treated as unfilled.")
-                    status = "open" if is_standard(row["day"], s) else "unused"
+                    status = "booked"
+                    sessions[proc] += 1
+                    if c == D.CONT:
+                        if proc != prev_proc:
+                            issues.append(f"{where}: 'cont.' must follow a session with the same procedure on "
+                                          "the same day.")
+                            span = 1
+                        else:
+                            span += 1
+                            if span > D.MAX_SESSIONS_PER_CASE:
+                                issues.append(f"{where}: a case can span at most {D.MAX_SESSIONS_PER_CASE} "
+                                              "sessions.")
+                    elif c in D.CASE_OPTIONS:
+                        ncases = int(c)
+                        cases[proc] += ncases
+                        span = 1
+                    else:
+                        issues.append(f"{where}: no cases entered for {G[proc]['label']}; counted as booked with "
+                                      "no cases.")
+                        span = 1
+                    prev_proc = proc
                 if status == "booked":
                     booked += 1
-                    available += 1
-                elif status == "open":
-                    available += 1
-                cells.append(dict(robot=ri + 1, week=row["week"], day=row["day"], session=s, procedure=proc,
-                                  status=status, cases=ncases))
-            for k, n in day_count.items():
-                if G[k].get("whole_day") and n % 2:
-                    issues.append(f"Robot {ri + 1}, week {row['week']} {row['day']}: {G[k]['label']} is a whole-day "
-                                  f"procedure but is booked for {n} session{'s' if n != 1 else ''}; book it in two "
-                                  "sessions of the same day.")
+                cells.append(dict(robot=ri + 1, week=row["week"], day=row["day"], session=s, procedure=proc
+                                  if status == "booked" else "", cases_entry=c, status=status, cases=ncases))
     return dict(cases_per_fortnight=cases, booked=booked, available=available, issues=issues, cells=cells,
-                procedure_sessions={k: n for k, n in sessions.items() if n}, group_sessions=dict(sessions))
+                procedure_sessions={k: v for k, v in sessions.items() if v}, group_sessions=dict(sessions))
 
 
 # ---------------------------------------------------------------------------
-# Suggest a template from demand (also builds the preset defaults)
+# Web grid conversion
 # ---------------------------------------------------------------------------
-def suggest_template(cfg, variant="standard", robots=None):
-    """Fill a two-week grid from annual demand (group volumes).
-
-    Sessions are filled in order (robot, weekday, week 1 then week 2, session 1 then 2;
-    then, for the extended day only, Monday to Thursday session 3) until demand is met
-    or sessions run out. A procedure keeps the rest of its day while it still has
-    unmet demand; otherwise the session goes to the procedure needing the most
-    sessions. A whole-day procedure is placed in session 1 and session 2 together.
-    The target allows for the share of templated cases that go ahead.
-    """
-    robots = robots or cfg["robots"]
-    f = cfg["programme"]["operating_weeks_per_year"] / 2
-    real = cfg["programme"].get("realisation_factor", 1.0) or 1.0
-    G = cfg["groups"]
-    remaining = {k: g["volume"] / f / real for k, g in G.items() if k not in D.NOT_MODELLED}
-    grid = empty_grid(robots)
-
-    def need(k):
-        return remaining[k] / G[k]["cases_per_session"] if G[k]["cases_per_session"] > 0 else 0.0
-
-    def best(allow_whole_day, prev):
-        if prev and remaining.get(prev, 0) > 1e-9 and not G[prev].get("whole_day"):
-            return prev
-        cands = [k for k in remaining if remaining[k] > 1e-9 and G[k]["cases_per_session"] > 0
-                 and (allow_whole_day or not G[k].get("whole_day"))]
-        return max(cands, key=lambda k: (need(k), k)) if cands else None
-
-    passes = [["AM", "PM"]] + ([["Eve"]] if variant == "extended" else [])
-    for sessions in passes:
-        for ri in range(robots):
-            for d in D.WEEKDAYS:
-                for w in (1, 2):
-                    row = next(x for x in grid[ri] if x["week"] == w and x["day"] == d)
-                    prev = (row["PM"] or None) if sessions == ["Eve"] else None
-                    for s in sessions:
-                        if row[s]:          # already filled (whole-day pair or maintenance)
-                            prev = row[s] if row[s] in G else None
-                            continue
-                        if d == "Fri" and s != "AM":
-                            continue
-                        whole_ok = s == "AM" and not row["PM"]
-                        k = best(whole_ok, prev if prev in G else None)
-                        if k is None:
-                            prev = None
-                            continue
-                        row[s] = k
-                        remaining[k] -= G[k]["cases_per_session"]
-                        if G[k].get("whole_day"):
-                            row["PM"] = k
-                            remaining[k] -= G[k]["cases_per_session"]
-                        prev = k
-    return grid
-
-
-# ---------------------------------------------------------------------------
-# Web grid conversion: "Unfilled session" on screen, "" in the engine
-# ---------------------------------------------------------------------------
-UI_COLUMNS = ["Week", "Day"] + [D.SESSION_LABELS[s] for s in D.SESSIONS]
+def ui_columns():
+    cols = ["Week", "Day", "Sessions available"]
+    for i, s in enumerate(D.SESSIONS, start=1):
+        cols += [f"{D.SESSION_LABELS[s]}: procedure", f"Session {i} cases"]
+    return cols
 
 
 def to_ui_rows(cfg, robot_rows):
-    lab = {k: option_label(cfg, k) for k in cfg["groups"]}
+    lab = {k: g["label"] for k, g in cfg["groups"].items()}
     out = []
     for row in robot_rows:
-        d = {"Week": int(row["week"]), "Day": row["day"]}
-        for s in D.SESSIONS:
-            e = row.get(s, "") or ""
-            d[D.SESSION_LABELS[s]] = lab.get(e, e) if e else D.UNFILLED
+        d = {"Week": int(row["week"]), "Day": row["day"], "Sessions available": int(row.get("sessions", 0) or 0)}
+        for i, s in enumerate(D.SESSIONS, start=1):
+            p = row.get(f"{s}_proc", "") or ""
+            d[f"{D.SESSION_LABELS[s]}: procedure"] = lab.get(p, p) if p else D.UNFILLED
+            d[f"Session {i} cases"] = str(row.get(f"{s}_cases", "") or "") or BLANK_CASES
         out.append(d)
     return out
 
 
-def _clean(v):
+def _clean(v, blank):
     if v is None or (isinstance(v, float) and v != v):
         return ""
     v = str(v).strip()
-    return "" if v == D.UNFILLED else v
+    return "" if v == blank else v
 
 
 def from_ui_rows(cfg, records):
     rev = label_map(cfg)
     out = []
     for rec in records:
-        row = dict(week=int(rec["Week"]), day=rec["Day"])
-        for s in D.SESSIONS:
-            v = _clean(rec.get(D.SESSION_LABELS[s]))
-            row[s] = rev.get(v, v)
+        try:
+            n = int(float(rec.get("Sessions available") or 0))
+        except (TypeError, ValueError):
+            n = 0
+        row = dict(week=int(rec["Week"]), day=rec["Day"], sessions=n)
+        for i, s in enumerate(D.SESSIONS, start=1):
+            p = _clean(rec.get(f"{D.SESSION_LABELS[s]}: procedure"), D.UNFILLED)
+            row[f"{s}_proc"] = rev.get(p, p)
+            row[f"{s}_cases"] = _clean(rec.get(f"Session {i} cases"), BLANK_CASES)
         out.append(row)
     return out
 
 
-def cell_text(cfg, cell, short=True):
+def cell_text(cfg, cell):
     if cell["status"] == "booked":
-        g = cfg["groups"][cell["procedure"]]
-        return g["label"].split(" (")[0] if short else option_label(cfg, cell["procedure"])
+        name = cfg["groups"][cell["procedure"]]["label"].split(" (")[0]
+        c = cell["cases_entry"]
+        return f"{name} ({c})" if c else name
     if cell["status"] == "open":
         return "Unfilled"
-    if cell["status"] in ("closed", "maintenance"):
-        return cell["status"].capitalize()
     return ""

@@ -1,15 +1,18 @@
 """
 Assumptions register as an Excel workbook for clinical review, and reading it back.
 
-Export: one row per procedure and assumption (multi-port and single-port), with a stable
+Export: one row per procedure and assumption, with a stable
 ID, specialty, procedure, assumption, value, unit, source, evidence grade and status,
 then blank review columns: Decision (agree / change to / needs evidence), Change to and
 Comment. The ID and Value columns are locked (sheet protection, no password) so they
 cannot be edited by accident; the review columns are unlocked.
 
 Import: rows marked "change to" with a value become changes, keyed by ID; rows marked
-"needs evidence" and any comments are kept for the business case. Changes are applied
-to the case configuration by apply_changes() and appear as user-modified assumptions.
+"needs evidence" and any comments are kept for the business case, and the Source and
+Evidence grade columns of changed rows are read so their citations reach Appendix D.
+A "Change to" value without a Decision, a value of the wrong type, an unknown decision,
+or a row no longer used by the model is reported as an error, not ignored. Changes are
+applied by apply_changes() and appear as user-modified assumptions.
 """
 import io
 from datetime import date
@@ -32,14 +35,8 @@ FONT = "Arial"
 
 
 def register_rows():
-    """Every row for the new procedure list: multi-port platform, then single-port, de-duplicated by ID."""
-    seen, out = set(), []
-    for platform in ("platform_b", "platform_d"):
-        for r in RG.detail_rows(E.build_config("large_1", platform, template=None)):
-            if r["id"] not in seen:
-                seen.add(r["id"])
-                out.append(r)
-    return out
+    """Every row for the procedure list (one row per procedure and assumption)."""
+    return RG.detail_rows(E.build_config("large_1", "platform_b", template=None))
 
 
 def export(path=None):
@@ -55,8 +52,7 @@ def export(path=None):
         ("1. Work in the 'Register' sheet. Each row is one assumption for one procedure.", False),
         ("2. In 'Decision', choose agree, change to, or needs evidence.", False),
         ("3. If you choose 'change to', enter the new value in 'Change to' in the same unit as 'Unit'.", False),
-        ("   Shares and proportions may be entered as 0.45 or 45%. Whole day: yes or no. Complexity: High, "
-         "Medium or Low.", False),
+        ("   Shares and proportions may be entered as 0.45 or 45%. Complexity: High, Medium or Low.", False),
         ("4. Add any comment in 'Comment'.", False),
         ("5. Only the Decision, Change to and Comment columns need editing. ID and Value are locked so they "
          "cannot be changed by accident (the sheet is protected without a password).", False),
@@ -64,12 +60,14 @@ def export(path=None):
          "user-modified in the business case.", False),
         ("", False),
         ("Example of a completed row (format only, not a recommendation)", True),
-        ("ID: colectomy.cases_per_session | Value: 1.5 | Decision: change to | Change to: 1 | "
-         "Comment: two colectomies a day on our lists", False),
+        ("ID: colectomy.extra_minutes_lap | Value: 40 | Decision: change to | Change to: 45 | "
+         "Comment: local audit 2026", False),
         ("", False),
         ("Status key", True),
         ("Not yet modelled: 30-day benefit set to zero until the evidence is reviewed. Zero is a placeholder, "
          "not a finding that the robot has no benefit.", False),
+        ("Neutral (clinical lead): 30-day effects set to zero by the clinical lead. Needs evidence: marked in the "
+         "literature review; value kept.", False),
         ("Flagged for review: carried over from an earlier procedure group and needs specialty review.", False),
         ("Placeholder: no adequate source yet. Context only: national data for context, not the value itself.",
          False),
@@ -78,14 +76,14 @@ def export(path=None):
     ]
     for i, (text, bold) in enumerate(lines, start=1):
         c = readme.cell(row=i, column=1, value=text)
-        c.font = Font(name=FONT, bold=bold, size=12 if i == 1 else 10, color=NAVY if bold else "000000")
+        c.font = Font(name=FONT, bold=bold, size=12 if i == 1 else 10, color="000000")
     readme.column_dimensions["A"].width = 120
 
     ws = wb.create_sheet("Register")
     for j, (name, w) in enumerate(zip(COLUMNS, WIDTHS), start=1):
         c = ws.cell(row=1, column=j, value=name)
-        c.font = Font(name=FONT, bold=True, color="FFFFFF")
-        c.fill = PatternFill("solid", fgColor=NAVY)
+        c.font = Font(name=FONT, bold=True, color="000000")
+        c.fill = PatternFill("solid", fgColor="D9D9D9")
         c.alignment = Alignment(wrap_text=True, vertical="top")
         ws.column_dimensions[c.column_letter].width = w
     review_fill = PatternFill("solid", fgColor="FFF8DC")
@@ -129,68 +127,82 @@ def export(path=None):
 def _parse_value(id_, text):
     field = id_.split(".")[-1]
     s = str(text).strip()
-    if field == "whole_day":
-        if s.lower() in ("yes", "y", "true", "1"):
-            return True
-        if s.lower() in ("no", "n", "false", "0"):
-            return False
-        raise ValueError("whole day must be yes or no")
     if field == "complexity":
         v = s.capitalize()
-        if v not in D.COMPLEXITY_CASES:
+        if v not in D.COMPLEXITY_LEVELS:
             raise ValueError("complexity must be High, Medium or Low")
         return v
     pct = s.endswith("%")
-    v = float(s.rstrip("%").replace(",", "").replace("£", "").strip())
-    return v / 100 if pct else v
+    try:
+        v = float(s.rstrip("%").replace(",", "").replace("£", "").strip())
+    except ValueError:
+        raise ValueError(f"'{s}' is not a number")
+    if v < 0:
+        raise ValueError("values cannot be negative")
+    v = v / 100 if pct else v
+    if field in ("p_open", "p_robot_elsewhere") and v > 1:
+        raise ValueError("a share must lie between 0 and 1 (or 0% and 100%)")
+    return v
+
+
+REMOVED_FIELDS = ("demand_medium", "demand_large", "cases_per_session", "whole_day")
 
 
 def load(data):
-    """Read a reviewed register (path or bytes). Returns dict(changes, needs_evidence, comments, errors)."""
+    """Read a reviewed register (path or bytes).
+    Returns dict(changes, needs_evidence, comments, sources, errors)."""
+    empty = dict(changes={}, needs_evidence=[], comments={}, sources={}, errors=[])
     wb = load_workbook(io.BytesIO(data) if isinstance(data, (bytes, bytearray)) else data, data_only=True)
     if "Register" not in wb.sheetnames:
-        return dict(changes={}, needs_evidence=[], comments={}, errors=["No 'Register' sheet found."])
+        return dict(empty, errors=["No 'Register' sheet found."])
     ws = wb["Register"]
     head = [c.value for c in ws[1]]
     missing = [c for c in ("ID", "Decision", "Change to", "Comment") if c not in head]
     if missing:
-        return dict(changes={}, needs_evidence=[], comments={}, errors=[f"Missing columns: {', '.join(missing)}."])
+        return dict(empty, errors=[f"Missing columns: {', '.join(missing)}."])
     ix = {name: head.index(name) for name in head if name}
     known = {r["id"]: r for r in register_rows()}
-    changes, needs, comments, errors = {}, [], {}, []
+    changes, needs, comments, sources, errors = {}, [], {}, {}, []
     for n, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
         id_ = row[ix["ID"]]
         if not id_:
             continue
-        dec = (row[ix["Decision"]] or "").strip().lower()
+        dec = str(row[ix["Decision"]] or "").strip().lower()
         new = row[ix["Change to"]]
         com = row[ix["Comment"]]
         if com:
             comments[id_] = str(com)
         if id_ not in known:
-            if dec:
-                errors.append(f"Row {n}: unknown ID '{id_}' ignored.")
+            if dec or new not in (None, ""):
+                why = ("no longer used from v0.8 (cases come from the rota; demand and single-port removed)"
+                       if id_.startswith("sp_") or id_.split(".")[-1] in REMOVED_FIELDS else "unknown ID")
+                errors.append(f"Row {n} ({id_}): {why}; not applied.")
+            continue
+        if new not in (None, "") and dec != "change to":
+            errors.append(f"Row {n} ({id_}): 'Change to' value {new!r} without the decision 'change to'"
+                          + (f" (decision is '{dec}')" if dec else "") + "; not applied.")
             continue
         if dec == "change to":
             if new in (None, ""):
-                errors.append(f"Row {n} ({id_}): 'change to' without a value; ignored.")
+                errors.append(f"Row {n} ({id_}): 'change to' without a value; not applied.")
                 continue
             try:
                 changes[id_] = _parse_value(id_, new)
             except ValueError as exc:
-                errors.append(f"Row {n} ({id_}): {exc}; ignored.")
+                errors.append(f"Row {n} ({id_}): wrong type of value ({exc}); not applied.")
+                continue
+            sources[id_] = dict(source=str(row[ix["Source"]] or "") if "Source" in ix else "",
+                                grade=str(row[ix["Evidence grade"]] or "") if "Evidence grade" in ix else "")
         elif dec == "needs evidence":
             needs.append(id_)
         elif dec and dec != "agree":
-            errors.append(f"Row {n} ({id_}): decision '{dec}' not recognised; ignored.")
-    return dict(changes=changes, needs_evidence=needs, comments=comments, errors=errors)
+            errors.append(f"Row {n} ({id_}): decision '{dec}' not recognised; not applied.")
+    return dict(changes=changes, needs_evidence=needs, comments=comments, sources=sources, errors=errors)
 
 
-def apply_changes(overrides, changes, preset):
-    """Apply register changes to build_config overrides. Demand changes apply to the
-    preset's hospital size; whole-day or complexity changes reset cases per session to
-    the default for the new setting unless cases per session is also changed."""
-    size = "medium" if preset.startswith("medium") else "large"
+def apply_changes(overrides, changes, preset=None):
+    """Apply register changes to build_config overrides (preset is accepted for saved cases
+    from earlier versions and is not used: no calculation depends on the hospital type)."""
     groups = overrides.setdefault("groups", {})
     for id_, v in changes.items():
         parts = id_.split(".")
@@ -198,35 +210,6 @@ def apply_changes(overrides, changes, preset):
             overrides.setdefault("unit_costs", {})[parts[1]] = v
         elif parts[0] == "programme":
             overrides.setdefault("programme", {})[parts[1]] = v
-        elif len(parts) == 2 and parts[1].startswith("demand_"):
-            g = groups.setdefault(parts[0], {})
-            g[f"cases_{parts[1][7:]}"] = v
-            if parts[1] == f"demand_{size}":
-                g["volume"] = v
-        elif len(parts) == 2:
+        elif len(parts) == 2 and parts[0] in D.PROCEDURE_GROUPS:
             groups.setdefault(parts[0], {})[parts[1]] = v
-        elif len(parts) == 3 and parts[1] == "share":
-            g = groups.setdefault(parts[0], {})
-            base = dict(D.SP_GROUPS.get(parts[0], {}).get("comparators", {}))
-            comps = dict(g.get("comparators", base))
-            comps[parts[2]] = v
-            g["comparators"] = comps
-        elif len(parts) == 3:
-            g = groups.setdefault(parts[0], {})
-            ref = D.SP_GROUPS.get(parts[0], {})
-            if parts[2] == "extra_minutes":
-                em = dict(g.get("extra_minutes", ref.get("extra_minutes", {})))
-                em[parts[1]] = v
-                g["extra_minutes"] = em
-            else:
-                import copy
-                red = copy.deepcopy(g.get("reductions", ref.get("reductions", {})))
-                red.setdefault(parts[1], {})[parts[2]] = v
-                g["reductions"] = red
-    for gk, g in groups.items():
-        if ("whole_day" in g or "complexity" in g) and "cases_per_session" not in g:
-            ref = D.PROCEDURE_GROUPS.get(gk) or D.SP_GROUPS.get(gk)
-            if ref:
-                g["cases_per_session"] = D.default_cases_per_session(g.get("complexity", ref["complexity"]),
-                                                                     g.get("whole_day", ref["whole_day"]))
     return overrides

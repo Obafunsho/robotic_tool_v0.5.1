@@ -10,12 +10,12 @@
     "status": "Draft: assumptions awaiting specialty review"
   },
   "configuration": {
-    "preset": "large_1",
-    "robots": 1,
-    "platform": "platform_d",
+    "preset": "large_2",
+    "robots": 2,
+    "platform": "platform_b",
     "evidence": "central",
     "instrument_price": "standard_discount",
-    "central_capital_per_robot": 0,
-    "template_variant": "standard"
+    "central_capital_per_robot": 1000000,
+    "existing_robots": "1"
   }
 }

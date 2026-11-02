@@ -39,35 +39,18 @@ def metric_value(r, metric):
 
 
 # --- mutations: each takes (cfg, level) with level "low" or "high" and edits cfg in place
-def _scale_groups(cfg, fields_mp, sp_key, factor):
+def _scale_groups(cfg, fields, factor):
     for g in cfg["groups"].values():
-        if E.is_multi_comparator(g):
-            for c in g["reductions"]:
-                if sp_key == "extra_minutes":
-                    g["extra_minutes"][c] *= factor
-                else:
-                    for k in sp_key:
-                        g["reductions"][c][k] *= factor
-        else:
-            for f in fields_mp:
-                g[f] *= factor
+        for f in fields:
+            g[f] *= factor
 
 
 def _p_open(cfg, factor):
     for g in cfg["groups"].values():
-        if E.is_multi_comparator(g):
-            sh = g["comparators"]
-            if "open" not in sh:
-                continue
-            new_open = min(sh["open"] * factor, 1.0)
-            rest = 1.0 - sh["open"]
-            scale = (1.0 - new_open) / rest if rest > 0 else 0.0
-            g["comparators"] = {c: (new_open if c == "open" else v * scale) for c, v in sh.items()}
-        else:
-            g["p_open"] = min(g["p_open"] * factor, 1.0 - g.get("p_robot_elsewhere", 0.0))
+        g["p_open"] = min(g["p_open"] * factor, 1.0 - g.get("p_robot_elsewhere", 0.0))
 
 
-def parameters(cfg):
+def parameters(cfg, base_cases=None):
     """List of (name, low description, high description, mutate(cfg, level)) applicable to cfg."""
     pf, pr = cfg["platform"], cfg["programme"]
     P = []
@@ -108,12 +91,11 @@ def parameters(cfg):
     add("Surgical first assistant per robot", "0 WTE", "2 WTE",
         lambda c, l: c["programme"].__setitem__("sfa_wte_per_robot", 0.0 if l == "low" else 2.0))
     add("Extra theatre minutes per case", "-50%", "+50%",
-        lambda c, l: _scale_groups(c, ["extra_minutes_open", "extra_minutes_lap"], "extra_minutes",
-                                   0.5 if l == "low" else 1.5))
+        lambda c, l: _scale_groups(c, ["extra_minutes_open", "extra_minutes_lap"], 0.5 if l == "low" else 1.5))
     add("Cost per theatre minute", "£8", "£20",
         lambda c, l: c["unit_costs"].__setitem__("theatre_minute", 8 if l == "low" else 20))
-    if cfg.get("template") is not None:
-        add("Share of templated cases that go ahead", "85%", "100%",
+    if cfg.get("fixed_cases") is None:
+        add("Share of rota cases that go ahead", "85%", "100%",
             lambda c, l: c["programme"].__setitem__("realisation_factor", 0.85 if l == "low" else 1.0))
     add("Steady-state utilisation", "80%", "100%",
         lambda c, l: c["programme"].__setitem__(
@@ -121,10 +103,10 @@ def parameters(cfg):
             [u if i < 2 else (0.8 if l == "low" else 1.0) for i, u in enumerate(c["programme"]["utilisation_by_year"])]))
     add("Share open without the robot (all specialties)", "half", "1.5 times", lambda c, l: _p_open(c, 0.5 if l == "low" else 1.5))
     add("Bed-days saved per case", "half", "1.5 times",
-        lambda c, l: _scale_groups(c, ["los_reduction_open", "los_reduction_lap"], ["los"], 0.5 if l == "low" else 1.5))
+        lambda c, l: _scale_groups(c, ["los_reduction_open", "los_reduction_lap"], 0.5 if l == "low" else 1.5))
     add("Complications, returns to theatre, readmissions and conversions avoided", "half", "1.5 times",
         lambda c, l: _scale_groups(c, [k for k in D.BENEFIT_KEYS if not k.startswith("los")],
-                                   ["conv", "reop", "comp", "readm"], 0.5 if l == "low" else 1.5))
+                                   0.5 if l == "low" else 1.5))
     add("Learning curve (years 1 and 2)", "slower (50%, 75%)", "none (100%)",
         lambda c, l: c["programme"].__setitem__(
             "learning_benefit_by_year",
@@ -132,7 +114,7 @@ def parameters(cfg):
     add("Excess bed-day cost", "£250", "£800",
         lambda c, l: c["unit_costs"].__setitem__("bed_day", 250 if l == "low" else 800))
     g = cfg["groups"].get("prostatectomy")
-    if g is not None and g["volume"] > 0 and not E.is_multi_comparator(g):
+    if g is not None and (base_cases or {}).get("prostatectomy", 0) > 0:
         def prost(c, l):
             if l == "high":
                 c["groups"]["prostatectomy"]["p_open"] = 0.0
@@ -146,12 +128,10 @@ def tornado(cfg, metric="extra_cost", base_result=None):
     base = base_result or E.run(cfg)
     base_val = metric_value(base, metric)
     bars, no_effect = [], []
-    for p in parameters(cfg):
+    for p in parameters(cfg, {k: g['planned_cases'] for k, g in base['groups'].items()}):
         vals = {}
         for level in ("low", "high"):
             c = copy.deepcopy(cfg)
-            if base.get("input_mode") == "demand":
-                c["manual_plan"] = dict(base["plan"])
             p["fn"](c, level)
             E.validate(c)
             vals[level] = metric_value(E.run(c), metric)

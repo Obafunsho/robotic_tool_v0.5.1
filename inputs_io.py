@@ -51,9 +51,7 @@ def widget_state(case):
         "w_prost": ("Robotic surgery at another centre"
                     if c.get("groups", {}).get("prostatectomy", {}).get("p_robot_elsewhere", 0) >= 1
                     else "Open surgery"),
-        "w_variant": c.get("template_variant", "standard") if c.get("template_variant") in ("standard", "extended")
-        else "standard",
-        "w_demandcheck": bool(c.get("demand_check", True)),
+        "w_existing": str(c.get("existing_robots", "0")),
         "w_realisation": int(round(100 * float(c.get("programme", {}).get("realisation_factor", 1.0)))),
         "w_basis": c.get("platform_overrides", {}).get(
             "contract_volume_basis", D.PLATFORMS[c["platform"]].get("contract_volume_basis", "per_robot")),

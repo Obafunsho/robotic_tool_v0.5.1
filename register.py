@@ -13,6 +13,8 @@ Status values
   Context only        : a source gives national context but not the value itself
   Placeholder         : no adequate source yet; must be replaced or confirmed
   Not yet modelled    : 30-day benefit set to zero until evidence is reviewed (not "no benefit")
+  Neutral (clinical lead): 30-day effects set to zero by the clinical lead
+  Needs evidence      : marked by the clinical lead's literature review; v0.7 value kept
   Flagged for review  : a value known to need clinical review before use
   Clinical lead input : set by the clinical lead (Aneel's procedure list)
   Assumption          : a modelling choice made by the project team
@@ -21,9 +23,10 @@ Nothing is marked as reviewed: specialty review is pending.
 """
 import defaults as D
 import engine as E
+import evidence_review as ER
 
-STATUSES = ("Sourced", "Partly sourced", "Context only", "Placeholder", "Not yet modelled", "Flagged for review",
-            "Clinical lead input", "Assumption", "Trust input")
+STATUSES = ("Sourced", "Partly sourced", "Context only", "Placeholder", "Not yet modelled", "Neutral (clinical lead)",
+            "Needs evidence", "Flagged for review", "Clinical lead input", "Assumption", "Trust input")
 
 SRC = dict(
     nboca="NBOCA State of the Nation report 2025",
@@ -108,7 +111,9 @@ def _p_open_source(k):
 
 
 def _effect_source(k, g, field):
-    if not g.get("benefit_modelled", True) and not field.startswith("extra_minutes"):
+    if g.get("benefit_status") == "neutral" and not field.startswith("extra_minutes"):
+        return D.NEUTRAL_TEXT, "Clinical lead opinion", "Neutral (clinical lead)"
+    if g.get("benefit_status") == "not_yet_modelled" and not field.startswith("extra_minutes"):
         src, grade = NEW_EVIDENCE.get(k, ("No evidence reviewed", "None"))
         return "Evidence for review: " + src, grade, "Not yet modelled"
     if k == "colectomy" and field == "conv_reduction_lap":
@@ -121,9 +126,17 @@ def _effect_source(k, g, field):
     if k in FLAGGED_CARRY:
         return FLAGGED_CARRY[k], "None", "Flagged for review"
     if k == "benign_gyn":
-        return "Averaged from the hysterectomy, myomectomy and endometriosis placeholders (by demand)", "None", \
+        return "Averaged from the hysterectomy, myomectomy and endometriosis placeholders (weighted by v0.7 case volumes)", "None", \
             "Placeholder"
     return "Expert estimate (placeholder)", "None", "Placeholder"
+
+
+def _reviewed(id_, default):
+    """Source, grade and status from the clinical lead's literature review where it covered this row."""
+    e = ER.REVIEW.get(id_)
+    if not e:
+        return default
+    return e["source"], e["grade"], e["status"]
 
 
 def detail_rows(cfg):
@@ -138,41 +151,17 @@ def detail_rows(cfg):
         g = cfg["groups"][k]
         sp, lab = g["specialty"], g["label"]
         owner = f"[{sp} clinical benefit owner]"
-        origin = g.get("origin", "")
-        for size in ("medium", "large"):
-            add(f"{k}.demand_{size}", sp, lab, f"Annual demand, {'medium DGH' if size == 'medium' else 'large hospital'}",
-                float(g[f"cases_{size}"]), "cases a year", "Placeholder for review. " + origin, "None",
-                "Placeholder", owner)
-        add(f"{k}.complexity", sp, lab, "Complexity", g["complexity"], "High / Medium / Low", SRC["aneel"],
-            "Clinical lead", "Clinical lead input", owner)
-        add(f"{k}.whole_day", sp, lab, "Whole-day procedure (one case across two sessions)", bool(g.get("whole_day")),
-            "yes / no", "Project proposal approved October 2026 (cystectomy, pancreatoduodenectomy, oesophagogastric "
-            "and liver resection)", "None", "Assumption", owner)
-        add(f"{k}.cases_per_session", sp, lab, "Cases per session", float(g["cases_per_session"]), "cases",
-            "Default from complexity (High 1, Medium 1.5, Low 3; whole day 0.5). No published operating-time source "
-            "used", "None", "Assumption", owner)
-        if E.is_multi_comparator(g):
-            for c, v in g["comparators"].items():
-                add(f"{k}.share.{c}", sp, lab, f"Share that would have {D.COMPARATOR_LABELS[c].lower()} without the "
-                    "robot", float(v), "share", g.get("evidence_note", ""), "Early series", "Placeholder", owner)
-                for m in D.SP_REDUCTION_KEYS:
-                    add(f"{k}.{c}.{m}", sp, lab, f"{D.FIELD_LABELS[m].capitalize()} v {D.COMPARATOR_SHORT[c].lower()}",
-                        float(g["reductions"][c][m]), "days per case" if m == "los" else "proportion per case",
-                        g.get("evidence_note", ""), "Early series", "Placeholder", owner)
-                add(f"{k}.{c}.extra_minutes", sp, lab, f"Extra theatre minutes v {D.COMPARATOR_SHORT[c].lower()}",
-                    float(g["extra_minutes"][c]), "minutes per case", "Placeholder", "None", "Placeholder", owner)
-        else:
-            src, grade, status = _p_open_source(k)
-            add(f"{k}.p_open", sp, lab, "Share that would be open without the robot", float(g["p_open"]), "share",
-                src, grade, status, owner)
-            for field, name, unit in EFFECTS:
-                src, grade, status = _effect_source(k, g, field)
-                add(f"{k}.{field}", sp, lab, name, float(g[field]), unit, src, grade, status, owner)
+        add(f"{k}.complexity", sp, lab, "Complexity (descriptive only; cases come from the rota)", g["complexity"],
+            "High / Medium / Low", SRC["aneel"], "Clinical lead", "Clinical lead input", owner)
+        src, grade, status = _reviewed(f"{k}.p_open", _p_open_source(k))
+        add(f"{k}.p_open", sp, lab, "Share that would be open without the robot", float(g["p_open"]), "share",
+            src, grade, status, owner)
+        for field, name, unit in EFFECTS:
+            src, grade, status = _reviewed(f"{k}.{field}", _effect_source(k, g, field))
+            add(f"{k}.{field}", sp, lab, name, float(g[field]), unit, src, grade, status, owner)
         add(f"{k}.tariff_uplift", sp, lab, "Extra tariff income per robotic case (cash case only)",
-            float(g.get("tariff_uplift", 0.0)), "£ per case",
-            D.TARIFF_SOURCES.get(k.replace("sp_", ""), D.DEFAULT_TARIFF_SOURCE),
-            "Policy (NHS Payment Scheme)" if k.replace("sp_", "") in D.TARIFF_SOURCES else "None", "Placeholder",
-            "[Finance lead]")
+            float(g.get("tariff_uplift", 0.0)), "£ per case", D.TARIFF_SOURCES.get(k, D.DEFAULT_TARIFF_SOURCE),
+            "Policy (NHS Payment Scheme)" if k in D.TARIFF_SOURCES else "None", "Placeholder", "[Finance lead]")
 
     uc, pr = cfg["unit_costs"], cfg["programme"]
     fin, sro = "[Finance lead]", "[Senior responsible owner]"
@@ -184,7 +173,7 @@ def detail_rows(cfg):
         add(f"unit_costs.{key}", "All", allp, D.UNIT_COST_LABELS[key], float(uc[key]), "£", "None found", "None",
             "Placeholder", fin)
     for key, name, unit, src, status in [
-            ("realisation_factor", "Share of templated cases that go ahead", "share",
+            ("realisation_factor", "Share of rota cases that go ahead", "share",
              "None found (cancellations and under-runs)", "Placeholder"),
             ("operating_weeks_per_year", "Operating weeks per year", "weeks", "None found", "Assumption"),
             ("implementation_cost_per_robot", "Implementation, training and proctoring per robot", "£",
@@ -209,53 +198,43 @@ def rows(cfg):
     def add(param, value, source, grade, status, owner):
         out.append(dict(parameter=param, value=value, source=source, grade=grade, status=status, owner=owner))
 
-    det = {r["id"]: r for r in detail_rows(cfg)}
+    det = detail_rows(cfg)
+    booked = cfg.get("_booked_procedures")
     for k, g in cfg["groups"].items():
-        if not g["volume"]:
+        if booked is not None and k not in booked:
             continue
         owner = f"[{g['specialty']} clinical benefit owner]"
-        add(f"{g['label']}: annual demand", f"{g['volume']:,.0f}", "Placeholder for review. " + g.get("origin", ""),
-            "None", "Placeholder", owner)
-        add(f"{g['label']}: complexity and cases per session",
-            f"{g['complexity']}; {g['cases_per_session']:g} per session" + (" (whole day)" if g.get("whole_day") else ""),
-            SRC["aneel"] + "; cases per session from the approved complexity defaults", "Clinical lead",
-            "Clinical lead input", owner)
-        if E.is_multi_comparator(g):
-            mix = ", ".join(f"{D.COMPARATOR_SHORT[c].lower()} {v:.0%}" for c, v in g["comparators"].items())
-            add(f"{g['label']}: what patients would have without the robot", mix,
-                g.get("evidence_note", D.DEFAULT_EVIDENCE_NOTE), "Early series", "Placeholder", owner)
-            add(f"{g['label']}: 30-day differences", "See Appendix A", g.get("evidence_note", ""), "Early series",
-                "Flagged for review" if "merged" in g.get("evidence_note", "") else "Placeholder", owner)
-            continue
-        po = det[f"{k}.p_open"]
+        rows_k = [x for x in det if x["id"].startswith(k + ".") and x["id"].split(".")[1] in
+                  {f for f, _, _ in EFFECTS} | {"p_open"}]
+        po = next(x for x in rows_k if x["id"] == f"{k}.p_open")
         add(f"{g['label']}: share that would be open without the robot", po["value"], po["source"], po["grade"],
             po["status"], owner)
-        if not g.get("benefit_modelled", True):
+        if g["benefit_status"] == "not_yet_modelled":
             src, grade = NEW_EVIDENCE.get(k, ("No evidence reviewed", "None"))
             add(f"{g['label']}: 30-day differences", "Not yet modelled (zero placeholder)",
                 "Evidence for review: " + src, grade, "Not yet modelled", owner)
+        elif g["benefit_status"] == "neutral":
+            add(f"{g['label']}: 30-day differences", "Neutral (zero)", D.EVIDENCE_NOTES.get(k, D.NEUTRAL_TEXT),
+                "Clinical lead opinion", "Neutral (clinical lead)", owner)
         else:
-            src, grade, status = _effect_source(k, g, "los_reduction_open")
-            if k == "colectomy":
-                src, grade, status = (f"{SRC['surg_endosc_2024']}; {SRC['plos_2015']}", "Observational and "
-                                      "meta-analysis", "Partly sourced")
-            add(f"{g['label']}: 30-day differences (bed-days, events, theatre time)", "See Appendix A", src, grade,
-                status, owner)
+            from collections import Counter
+            cnt = Counter(x["status"] for x in rows_k if x["id"] != f"{k}.p_open")
+            reviewed = any(x["id"] in ER.REVIEW for x in rows_k)
+            add(f"{g['label']}: 30-day differences (bed-days, events, theatre time)", "See Appendix A",
+                ("Clinical lead's literature review (October 2026): " if reviewed else "")
+                + "; ".join(f"{v} {a.lower()}" for a, v in sorted(cnt.items()))
+                + ". Full citations in the Excel register.", "See register",
+                "Sourced" if cnt.get("Sourced") else ("Needs evidence" if cnt.get("Needs evidence") else
+                                                      sorted(cnt)[0]), owner)
         if k in D.TARIFF_SOURCES:
             val = g.get("tariff_uplift", 0.0)
             add(f"{g['label']}: extra tariff income per case", f"£{val:,.0f}", D.TARIFF_SOURCES[k],
                 "Policy (NHS Payment Scheme)", "Placeholder" if val == 0 else "Trust input", "[Finance lead]")
 
     pf, pr, uc = cfg["platform"], cfg["programme"], cfg["unit_costs"]
-    if cfg.get("template") is not None:
-        add("Two-week theatre template", {"standard": "Standard day, pre-filled from demand",
-                                          "extended": "Extended day, pre-filled from demand"}.get(
-            cfg.get("template_variant"), "Entered by the trust"),
-            "Trust theatre plan", "Local", "Trust input", "[Theatres lead]")
-    add("Cases per session by complexity", "High 1, Medium 1.5, Low 3; whole day 0.5",
-        "Project proposal approved October 2026; no published operating-time source used", "None", "Assumption",
-        "[Clinical lead]")
-    add("Share of templated cases that go ahead", f"{pr.get('realisation_factor', 1.0):.0%}",
+    add("Two-week robot rota (sessions and cases)", "Example rota" if cfg.get("template_variant") == "example"
+        else "Entered by the trust", "Trust theatre plan", "Local", "Trust input", "[Theatres lead]")
+    add("Share of rota cases that go ahead", f"{pr.get('realisation_factor', 1.0):.0%}",
         "None found (cancellations and under-runs)", "None", "Placeholder", "[Theatres lead]")
     add("Extra tariff income, all other procedures", "£0", D.DEFAULT_TARIFF_SOURCE + " Not checked per HRG.",
         "None", "Placeholder", "[Finance lead]")
@@ -292,9 +271,8 @@ def rows(cfg):
 
     # Programme ---------------------------------------------------------------------
     sro = "[Senior responsible owner]"
-    add("Sessions per robot per week; operating weeks", f"{pr['sessions_per_robot_per_week']}; "
-        f"{pr['operating_weeks_per_year']}", "Programmes should be fully used on all working days (GIRFT 2025)",
-        "Policy", "Assumption", sro)
+    add("Operating weeks per year", f"{pr['operating_weeks_per_year']}",
+        "Programmes should be fully used on all working days (GIRFT 2025)", "Policy", "Assumption", sro)
     add("Utilisation ramp (years 1 to 5)", ", ".join(f"{u:.0%}" for u in pr["utilisation_by_year"]),
         "None found", "None", "Assumption", sro)
     add("Learning curve on benefits (years 1 to 5)", ", ".join(f"{u:.0%}" for u in pr["learning_benefit_by_year"]),
@@ -308,8 +286,6 @@ def rows(cfg):
         "Guidance / none (cost)", "Partly sourced", "[Theatres lead]")
     add("Robotic cases per robot per year: advisory level", f"{pr.get('max_cases_per_robot', 700):,}",
         "Project team decision (amber guardrail above this level, not a cut)", "n/a", "Assumption", "[Project team]")
-    add("Minimum list fill", f"{pr.get('min_list_fill', 0.75):.0%}",
-        "Project team decision (matches the utilisation guardrail)", "n/a", "Assumption", "[Project team]")
     add("Benchmark programme volume", f"{D.BENCHMARK['cases_per_robot']} cases per robot per year",
         D.BENCHMARK["sources"]["cases_per_robot"], "Assumption with national context", "Assumption", "[Project team]")
     add("Discount rate (economic case)", f"{pr['discount_rate']:.1%}", SRC["green"], "Policy", "Sourced", fin)

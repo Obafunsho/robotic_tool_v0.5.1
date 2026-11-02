@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.8.0 (November 2026)
+
+The clinical lead's final decisions: assumptions from his literature review, a simpler rota input, and fewer moving parts.
+
+Assumptions
+- The clinical lead's literature review of the v0.7 register is applied as the new defaults (`evidence_review.py`). The reviewer's citations, which were in the Comment column, are carried into Source, and an evidence grade is assigned from the study design each citation names.
+- 20 values change:
+  - Applied: the changes that reduce benefit or add theatre time, and the six that increase complication, conversion or reoperation benefit (colectomy, abdominal wall, gynaecological oncology and rectal).
+  - Radical cystectomy: bed-days saved v open 2.0 to 1.0; readmissions avoided v open 0% to 7% (iROC trial).
+  - Not applied: the seven changes that would increase length-of-stay benefit or the open share keep their v0.7 values (abdominal wall LOS v open; benign gynaecology open share and LOS v open; gynaecological oncology open share and LOS v open; rectal LOS v lap; prostatectomy LOS v open, kept at 2.0). Each is labelled as the clinical lead's decision, with the reviewer's proposal and citation shown.
+- Complex cholecystectomy: all 30-day outcome effects zero, labelled "neutral (clinical lead)", with 12 extra minutes v laparoscopic kept.
+- Gynaecology: the 30-day benefit is kept for the whole population (about 90% of hysterectomies are benign). The business case notes the LACC trial's worse long-term survival after minimally invasive radical hysterectomy for cervical cancer, which is outside the 30-day scope.
+- Radical prostatectomy: a robotic tariff uplift exists; it is left at £0 until the figure is supplied.
+- Rows marked "needs evidence" keep their v0.7 value, with that status shown.
+
+Model and inputs
+- New rota input mirroring the clinical lead's rota:
+  - "Sessions available" per day: 0, 2 or 3 (session 3 unavailable on 2-session days; weekdays default to 2, weekends to 0).
+  - A procedure dropdown and a cases dropdown per session: 1 to 4, or "cont." for a case continuing from the previous session with the same procedure, spanning at most 3 sessions.
+  - Utilisation = sessions booked / sessions available.
+  - Maintenance option removed (set fewer sessions instead).
+- Complexity is descriptive only; complexity-derived case counts and whole-day rules are removed.
+- Removed: the single-port platform; demand, unmet-demand warnings, the suggest-from-demand routine, the demand-led list planner, and the 1-robot v 2-robot comparison. The options appraisal is now "no robot" v "proposal as entered".
+- Hospital type only selects the starting example rota; a test confirms identical results for the same rota under either type. 2-robot examples pre-fill robot 2, which users can clear.
+- New input: existing soft-tissue robots at the trust (0 to 5 or more), stated in the business case.
+- Advanced section: unit costs (bed-day, theatre minute, sterile services, complication, reoperation, readmission, conversion) and surgical first assistant cost and WTE are editable and flagged when changed.
+- Guardrails simplified to seven: "Lists less than 75% full" and "Platform evidence base" removed.
+
+Register (Excel)
+- 254 rows: the demand, cases-per-session, whole-day and single-port rows are gone; a specialty column and locked ID and Value are kept.
+- On reload, these are now reported as errors rather than ignored:
+  - a "Change to" value without the decision "change to";
+  - a value of the wrong type, including a share above 1 or a negative value;
+  - an unknown decision;
+  - a row for something the model no longer uses.
+- The Source and Evidence grade of changed rows are read and shown in Appendix D.
+
+Design
+- Website: plain, high-contrast style familiar to NHS users (Arial, black text, simple tables), with no NHS name or logo. Confirmed in Chromium.
+- Word: black text throughout, black headings, grey table headers and greyscale charts. The yellow placeholder highlights and red/amber/green guardrail cells are kept.
+- The Excel register header is black on grey.
+
+Examples
+- Medium DGH, 1 robot: 19 of 20 sessions, about 520 cases a year.
+- Large hospital, 2 robots: 36 of 40 sessions, about 900.
+- The single-port example is replaced by a large-hospital, 2-robot example.
+
+Tests: 313. The demand-planner, single-port and complexity tests were removed with those features; new tests cover the rota, the review defaults, the removals, hospital-type independence, existing robots, editable unit costs, register errors and sources, and black Word text.
+
 ## 0.7.0 (October 2026)
 
 Simpler template input and the clinical lead's procedure list.

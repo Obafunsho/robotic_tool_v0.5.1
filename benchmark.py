@@ -43,7 +43,7 @@ def benchmark_config(trust_cfg=None, spec=None):
                          instrument_price=b["instrument_price"], template=None)
     if trust_cfg is not None:
         for k, g in trust_cfg["groups"].items():
-            if k in cfg["groups"] and not E.is_multi_comparator(g):
+            if k in cfg["groups"]:
                 for f in D.BENEFIT_KEYS + ["p_open", "p_robot_elsewhere", "extra_minutes_open",
                                            "extra_minutes_lap"]:
                     cfg["groups"][k][f] = g.get(f, cfg["groups"][k].get(f, 0.0))
@@ -51,8 +51,6 @@ def benchmark_config(trust_cfg=None, spec=None):
         keep = {"central_capital_per_robot": central}
         cfg["programme"] = dict(copy.deepcopy(trust_cfg["programme"]), **keep)
     cases = benchmark_cases(b)
-    for k, g in cfg["groups"].items():
-        g["volume"] = cases.get(k, 0.0)
     cfg["fixed_cases"] = cases
     cfg["preset_label"] = b["label"]
     E.validate(cfg)

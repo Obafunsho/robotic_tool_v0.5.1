@@ -79,15 +79,11 @@ def configure(case):
     # register review: changes Aneel made in the Excel register, applied for this preset
     rev = c.get("register_review") or {}
     if rev.get("changes"):
-        RX.apply_changes(ov, rev["changes"], c["preset"])
-    if "demand_check" in c:
-        ov["demand_check"] = bool(c["demand_check"])
-    template = c.get("template") or c.get("template_variant", "standard")
-    if c.get("plan") is not None:
-        template = None
+        RX.apply_changes(ov, rev["changes"])
+    ov["existing_robots"] = str(c.get("existing_robots", "0"))
+    template = c.get("template") if isinstance(c.get("template"), list) else "example"
     return dict(preset=c["preset"], platform=c["platform"], evidence=c.get("evidence", "central"),
-                overrides=ov, instrument_price=c.get("instrument_price", "list"),
-                plan=c.get("plan"), template=template)
+                overrides=ov, instrument_price=c.get("instrument_price", "list"), template=template)
 
 
 def with_changes(base, **changes):
@@ -95,14 +91,7 @@ def with_changes(base, **changes):
     group_overrides = {group: {field: value}} is merged into the case's own."""
     kw = json.loads(json.dumps(base))
     for k, v in changes.items():
-        if k == "robots":
-            if kw["overrides"].get("robots") != v and isinstance(kw.get("template"), list):
-                # a custom template is drawn for one robot count: other counts use a
-                # template suggested from demand
-                kw["template"] = "standard"
-            kw["overrides"]["robots"] = v
-            kw["plan"] = None
-        elif k == "central_capital_per_robot":
+        if k == "central_capital_per_robot":
             kw["overrides"]["programme"]["central_capital_per_robot"] = v
         elif k == "group_overrides":
             g = kw["overrides"].setdefault("groups", {})
@@ -126,15 +115,6 @@ def run_with(base, **changes):
 PROSTATE_ELSEWHERE = {"prostatectomy": {"p_open": 0.0, "p_robot_elsewhere": 1.0}}
 
 
-def recommended_robots(base):
-    """Largest robot count (1 or 2) whose booked utilisation is at least 75%."""
-    best = 1
-    for n in (1, 2):
-        if run_with(base, robots=n)["booked_utilisation"] >= D.PROGRAMME["low_utilisation_warning"]:
-            best = n
-    return best
-
-
 def break_even_sentence(be):
     if be["status"] == "within_capacity":
         return (f"Break-even: 30-day cost avoided would cover the extra cost at about "
@@ -151,29 +131,37 @@ def break_even_sentence(be):
     return "Break-even: not applicable (no robotic cases planned)."
 
 
-def label_for(cfg, key):
-    return E.slot_label(cfg, key, short=False)
-
-
 def n_lists_txt(r):
-    if r["input_mode"] == "template":
-        n = len(r["template_summary"]["procedure_sessions"])
-        return plural(n, "procedure") + " on the two-week theatre template"
-    n = sum(1 for k, v in r["plan"].items() if v and k != E.SHARED)
-    return plural(n, "specialty").replace("specialtys", "specialties") + (
-        " and a shared list" if r["plan"].get(E.SHARED) else "")
+    n = len(r["template_summary"]["procedure_sessions"])
+    return plural(n, "procedure") + " on the two-week robot rota"
+
+
+GYN = {"benign_gyn", "gyn_oncology"}
+LACC_NOTE = ("Outside the 30-day scope of this case: the LACC trial (Ramirez et al, NEJM 2018) found worse long-term "
+             "survival after minimally invasive radical hysterectomy for early cervical cancer. The 30-day benefit is "
+             "kept for the whole gynaecology population, as about 90% of hysterectomies are benign; case selection for "
+             "cervical cancer should follow current guidance.")
+PROSTATE_TARIFF_NOTE = ("A robotic tariff uplift exists for radical prostatectomy (a robotic-specific HRG in the NHS "
+                        "Payment Scheme); it is left at £0 until the figure is supplied.")
 
 
 def not_modelled_note(r):
-    """Flag procedures whose 30-day benefit is not yet modelled, so zero is not read as no benefit."""
-    nm = [(g["label"], g["planned_cases"]) for k, g in r["groups"].items()
-          if not g.get("benefit_modelled", True) and g["planned_cases"] >= 0.5]
-    if not nm:
-        return ""
-    return ("30-day benefit not yet modelled for " + "; ".join(f"{a} ({n0(b)} cases a year)" for a, b in nm)
-            + ". These cases are costed, but their 30-day benefit is a zero placeholder pending evidence, not a "
-            "finding that the robot has no benefit. The patient consequences and cost per outcome above therefore "
-            "understate them (Appendix A).")
+    """Flag procedures whose 30-day benefit is not yet modelled (so zero is not read as no benefit),
+    and procedures set to neutral by the clinical lead."""
+    nm = [(g["label"], g["planned_cases"]) for g in r["groups"].values()
+          if g["benefit_status"] == "not_yet_modelled" and g["planned_cases"] >= 0.5]
+    neu = [(g["label"], g["planned_cases"]) for g in r["groups"].values()
+           if g["benefit_status"] == "neutral" and g["planned_cases"] >= 0.5]
+    out = []
+    if nm:
+        out.append("30-day benefit not yet modelled for " + "; ".join(f"{a} ({n0(b)} cases a year)" for a, b in nm)
+                   + ". These cases are costed, but their 30-day benefit is a zero placeholder pending evidence, not "
+                   "a finding that the robot has no benefit. The patient consequences and cost per outcome above "
+                   "therefore understate them (Appendix A).")
+    if neu:
+        out.append("30-day effects set to neutral (zero) by the clinical lead for " + "; ".join(
+            f"{a} ({n0(b)} cases a year)" for a, b in neu) + "; these cases are costed, including extra theatre time.")
+    return " ".join(out)
 
 
 def scheduled_groups(r):
@@ -193,8 +181,9 @@ def build_blocks(case, include_charts=True):
     t = r["totals"]
     H = pr["horizon_years"]
     inj = pr["central_capital_per_robot"]
-    rec = recommended_robots(base)
-    bench = BM.run_benchmark(cfg) if pf.get("procedure_set") != "single_port" else None
+    bench = BM.run_benchmark(cfg)
+    booked = {k for k, g in r["groups"].items() if g["planned_cases"] >= 0.5}
+    cfg["_booked_procedures"] = booked
     reg = RG.rows(cfg)
     reg_open = sum(1 for x in reg if x["status"] != "Sourced")
     B = []
@@ -225,7 +214,8 @@ def build_blocks(case, include_charts=True):
         f"This business case seeks approval for a robot-assisted surgery programme at {trust}: "
         f"{robots_txt} ({pf['label'].split(':')[0]}), operating {r['booked_sessions_per_fortnight']:g} of "
         f"{r['capacity_per_fortnight']:g} available sessions per fortnight across "
-        f"{n_lists_txt(r)}.")))
+        f"{n_lists_txt(r)}. The trust currently has {cfg.get('existing_robots', '0')} existing soft-tissue "
+        "robot(s).")))
     add(dict(type="p", text=(
         "It is presented as an investment in quality, access and capacity, not as a cost-saving proposal. "
         "The case sets out first what the investment buys for patients, then what it costs per outcome, "
@@ -268,7 +258,8 @@ def build_blocks(case, include_charts=True):
                   + [gbpk(t["net_cash_cost"])]]
     add(dict(type="table", header=hdr, widths=[2626] + [1067] * 5 + [1065], rows=rows5, bold_last=True))
     add(dict(type="p", text=TARIFF_NOTE + (
-        "" if t["tariff_income"] else " No extra tariff income has been entered for this case.")))
+        "" if t["tariff_income"] else " No extra tariff income has been entered for this case.")
+        + (" " + PROSTATE_TARIFF_NOTE if "prostatectomy" in booked else "")))
     cap = r["capital"]
     if pf["model"] == "purchase":
         add(dict(type="p", text=(
@@ -289,11 +280,6 @@ def build_blocks(case, include_charts=True):
     add(dict(type="h3", text="Spending guardrails"))
     add(dict(type="table", header=["Check", "Result", "Status"], widths=[5000, 2200, 1826],
              rows=[[g["check"], g["value"], g["status"].capitalize()] for g in r["guardrails"]], status_col=2))
-    if rec != cfg["robots"]:
-        add(dict(type="p", text=(
-            f"The tool's utilisation rule recommends {plural(rec, 'robot')} for this case mix, which differs from "
-            f"the {cfg['robots']} proposed. The board should be satisfied that the additional capacity will be "
-            "filled before approving.")))
     add(dict(type="h3", text="Recommendation"))
     instr_txt = (f", an instrument price no higher than {gbp(pf['instruments_per_case'])} per case"
                  if pf.get("instruments_per_case") and not pf.get("instruments_included") else "")
@@ -308,7 +294,8 @@ def build_blocks(case, include_charts=True):
     add(dict(type="h2", text="2.1 Case for change"))
     add(dict(type="p", text=(
         f"[Describe {trust}'s current position: surgical waiting lists, current minimal access rates by "
-        "specialty, workforce and training needs, and any existing robotic provision.]")))
+        "specialty, workforce and training needs.] The trust currently has "
+        f"{cfg.get('existing_robots', '0')} existing soft-tissue robot(s); this proposal adds {robots_txt}.")))
     add(dict(type="p", text=(
         "Robot-assisted surgery is expanding across the NHS. NICE's early value assessment of robot-assisted "
         "surgery for soft tissue procedures (HTE21, April 2025) allows these systems to be used while further "
@@ -325,12 +312,10 @@ def build_blocks(case, include_charts=True):
     sg = scheduled_groups(r)
     pri = [cfg["groups"][k]["label"] for k in sg if cfg["groups"][k]["nhse_priority"]]
     oth = [cfg["groups"][k]["label"] for k in sg if not cfg["groups"][k]["nhse_priority"]]
-    sh = [g["label"] for k, g in r["groups"].items() if g["shared_cases"] >= 0.5]
     add(dict(type="p", text=(
         "The programme includes specialties that NHS England has signalled as priorities for robotic access: "
         f"{', '.join(pri) if pri else 'none scheduled in this configuration'}. Other procedures scheduled are "
-        f"{', '.join(oth) if oth else 'none'}."
-        + (f" A shared list pools the remaining demand from {', '.join(sh)}." if sh else ""))))
+        f"{', '.join(oth) if oth else 'none'}.")))
     add(dict(type="h2", text="2.3 Objectives"))
     add(dict(type="bullets", items=[
         f"Deliver about {n0(y3['cases'])} robotic operations a year by year 3.",
@@ -359,38 +344,24 @@ def build_blocks(case, include_charts=True):
         f"Activity above {pr.get('max_cases_per_robot', 700):,} robotic cases per robot per year is flagged as an "
         "advisory guardrail; it is not cut.")))
     add(dict(type="p", text=(
-        "Activity comes from a two-week theatre template: each session's list type and its major, medium and "
-        "minor cases are mapped to procedures (Appendix A), counted over the fortnight and extrapolated to a year. "
-        "Where annual demand is entered, delivered cases are limited to demand and any shortfall is reported."
-        if r["input_mode"] == "template" else
-        "Activity comes from annual demand by specialty, planned into whole lists.")))
+        "Activity comes from a two-week robot rota: for each day the trust sets the sessions available, and for each "
+        "session the procedure and the number of cases (or a case continuing from the previous session). The "
+        "fortnight is extrapolated to a year. Utilisation is sessions booked divided by sessions available.")))
+    if booked & GYN:
+        add(dict(type="p", text=LACC_NOTE))
     add(dict(type="h2", text="3.2 Options appraised"))
-    rows = [["Option 0: no robot", "n/a", "0", "0", "£0", "n/a", "£0"]]
-    suggested = False
-    for n in (1, 2):
-        rn = run_with(base, robots=n)
-        yn = rn["yearly"][min(3, H) - 1]
-        star = ""
-        if isinstance(base.get("template"), list) and n != cfg["robots"]:
-            star, suggested = " *", True
-        rows.append([f"Option {n}: {plural(n, 'robot')}{star}", f"{rn['booked_utilisation']:.0%}", n0(yn["cases"]),
-                     n0(yn["bed_days"]), gbpm(rn["totals"]["extra_cost"]),
-                     ratio(rn["totals"]["cost_per_bed_day_released"]), gbpm(rn["economic"]["net_present_cost"])])
     add(dict(type="table", header=["Option", "Utilisation", "Cases (yr 3)", "Bed-days (yr 3)",
                                    f"{H}-year extra cost", "Per bed-day released", "Net present cost"],
-             widths=[1826, 1150, 1050, 1100, 1300, 1300, 1300], rows=rows, small=True))
+             widths=[1826, 1150, 1050, 1100, 1300, 1300, 1300], small=True, rows=[
+                 ["Option 0: no robot", "n/a", "0", "0", "£0", "n/a", "£0"],
+                 [f"Option 1: the proposal as entered ({robots_txt})", f"{r['booked_utilisation']:.0%}",
+                  n0(y3["cases"]), n0(y3["bed_days"]), gbpm(t["extra_cost"]),
+                  ratio(t["cost_per_bed_day_released"]), gbpm(r["economic"]["net_present_cost"])]]))
     add(dict(type="p", text=(
-        f"Preferred option: {robots_txt}. Option 0 avoids all programme costs but delivers none of the patient "
-        "consequences above."
-        + (" * This option uses a template suggested from demand, because the entered template is drawn for "
-           f"{plural(cfg['robots'], 'robot')}." if suggested else ""))))
+        "Preferred option: the proposal as entered. Option 0 avoids all programme costs but delivers none of the "
+        "patient consequences above.")))
     add(dict(type="h2", text="3.3 Platform comparison"))
-    if pf.get("procedure_set") == "single_port":
-        add(dict(type="p", text=(
-            "A single-port platform is appraised on its own eligible case mix (transoral, transanal, urological and "
-            "thoracic procedures), with its own counterfactuals that include multi-port robotic surgery. It is "
-            "therefore not compared line by line with multi-port platforms.")))
-    else:
+    if True:
         prow = []
         for pk in ("platform_a", "platform_b", "platform_c"):
             rp = run_with(base, platform=pk)
@@ -400,9 +371,7 @@ def build_blocks(case, include_charts=True):
         add(dict(type="table", header=["Platform", f"{H}-year extra cost", "Per case", "Net present cost", "Price basis"],
                  widths=[3400, 1500, 1200, 1600, 1326], rows=prow))
     add(dict(type="h2", text="3.4 Comparison with a benchmark programme"))
-    if bench is None:
-        add(dict(type="p", text="The benchmark describes a multi-port programme and is not shown for a single-port platform."))
-    else:
+    if True:
         add(dict(type="p", text=(
             "The benchmark describes a well-functioning multi-port programme run through the same model with the "
             "same clinical assumptions and unit costs, so the differences come from volume, case mix and price. "
@@ -411,11 +380,6 @@ def build_blocks(case, include_charts=True):
             "value is sourced; values without a published source are labelled as assumptions.")))
         add(dict(type="table", header=["Measure", "This proposal", "Benchmark", "Benchmark source"],
                  widths=[2700, 1300, 1300, 3726], rows=[list(x) for x in BM.comparison_rows(r, bench)], small=True))
-        add(dict(type="p", text=(
-            f"The benchmark volume needs about {bench['booked_sessions_per_fortnight']:.1f} half-day "
-            f"session-equivalents a fortnight at this tool's cases per list, against "
-            f"{r['capacity_per_fortnight'] // cfg['robots']} per robot assumed here. High-volume programmes reach "
-            "it with longer operating days, for example three-session days (GIRFT 2025).")))
     add(dict(type="h2", text="3.5 Sensitivity analysis"))
     add(dict(type="p", text=(
         "Each assumption is moved on its own to a low and a high value while everything else, including the list "
@@ -444,8 +408,7 @@ def build_blocks(case, include_charts=True):
             ("All benefits halved", dict(evidence="conservative")),
             ("All benefits 1.5 times", dict(evidence="optimistic"))]
     g_pro = cfg["groups"].get("prostatectomy")
-    if g_pro is not None and g_pro["volume"] > 0 and not E.is_multi_comparator(g_pro) \
-            and g_pro.get("p_robot_elsewhere", 0) < 1:
+    if g_pro is not None and "prostatectomy" in booked and g_pro.get("p_robot_elsewhere", 0) < 1:
         scen.append(("Prostatectomy: robotic surgery at another centre instead of open",
                      dict(group_overrides=PROSTATE_ELSEWHERE)))
     for key in ("list", "standard_discount", "volume_discount"):
@@ -595,10 +558,7 @@ def build_blocks(case, include_charts=True):
 
     # 6 Management case -----------------------------------------------------------------
     add(dict(type="h1", text="6. Management case"))
-    if r["input_mode"] == "template":
-        B.extend(template_blocks(r))
-    else:
-        B.extend(legacy_plan_blocks(r))
+    B.extend(template_blocks(r))
     add(dict(type="h2", text="6.2 Governance, workforce and training"))
     add(dict(type="bullets", items=[
         "[Name the robotic steering committee, its executive chair and reporting line.] The committee approves "
@@ -641,7 +601,7 @@ def build_blocks(case, include_charts=True):
         "pending specialty review; any changes from the defaults are listed in Appendix C.")))
     arow = []
     for row in E.prior_rows(cfg):
-        if not cfg["groups"][row["group"]]["volume"]:
+        if row["group"] not in booked:
             continue
         arow.append([row["specialty"], D.COMPARATOR_SHORT[row["comparator"]], f"{row['share']:.0%}",
                      f"{row['los']:g}", f"{row['conv']:.1%}", f"{row['comp']:.1%}", f"{row['reop']:.1%}",
@@ -656,23 +616,20 @@ def build_blocks(case, include_charts=True):
                     ("" if g.get("benefit_modelled", True) else D.NOT_YET_MODELLED_TEXT.capitalize() + ". ")
                     + (g.get("evidence_note") or D.EVIDENCE_NOTES.get(k, D.DEFAULT_EVIDENCE_NOTE))
                     + (f" Origin: {g['origin']}" if g.get("origin") else "")]
-                   for k, g in cfg["groups"].items() if g["volume"]], small=True))
-    add(dict(type="h3", text="Procedures: complexity and cases per session"))
+                   for k, g in cfg["groups"].items() if k in booked], small=True))
+    add(dict(type="h3", text="Procedures"))
     add(dict(type="p", text=(
-        "Each booked session on the template counts as the cases per session shown, set by the procedure's "
-        "complexity (High 1, Medium 1.5, Low 3; a whole-day procedure 0.5, so one case across two sessions). "
-        "Changes from the defaults are listed in Appendix C.")))
-    add(dict(type="table", header=["Specialty", "Procedure", "Complexity", "Cases per session", "Whole day",
-                                   "30-day benefit"], widths=[1700, 3200, 1000, 1000, 800, 1326],
-             rows=[[g["specialty"], g["label"], g["complexity"], f"{g['cases_per_session']:g}",
-                    "Yes" if g.get("whole_day") else "No",
-                    "Modelled" if g.get("benefit_modelled", True) else "Not yet modelled"]
+        "Complexity is descriptive; cases come from the rota. 'Not yet modelled' means a zero placeholder pending "
+        "evidence; 'Neutral (clinical lead)' means the clinical lead set the 30-day effects to zero.")))
+    add(dict(type="table", header=["Specialty", "Procedure", "Complexity", "30-day benefit"],
+             widths=[2000, 4400, 1100, 1526],
+             rows=[[g["specialty"], g["label"], g["complexity"], D.BENEFIT_STATUS_LABELS[g["benefit_status"]]]
                    for g in sorted(cfg["groups"].values(), key=lambda x: x["label"].lower())], small=True))
     add(dict(type="h3", text="Tariff: extra income per robotic case (cash case only)"))
     add(dict(type="table", header=["Procedure", "Extra income per case", "Source"], widths=[3000, 1600, 4426],
              rows=[[g["label"], gbp(g.get("tariff_uplift", 0.0)),
                     D.TARIFF_SOURCES.get(k, D.DEFAULT_TARIFF_SOURCE)]
-                   for k, g in cfg["groups"].items() if g["volume"] or g.get("tariff_uplift")], small=True))
+                   for k, g in cfg["groups"].items() if k in booked or g.get("tariff_uplift")], small=True))
     add(dict(type="h1", text="Appendix B. Unit costs and programme settings"))
     uc = cfg["unit_costs"]
     add(dict(type="table", header=["Input", "Value", "Note"], widths=[3400, 1600, 4026], rows=[
@@ -688,12 +645,10 @@ def build_blocks(case, include_charts=True):
         ["Theatre works per robot (one-off)", gbp(pr.get("theatre_modification_per_robot", 0)), "Placeholder; confirm with estates."],
         ["Implementation, training and proctoring per robot", gbp(pr["implementation_cost_per_robot"]), "One-off, year 1. Placeholder."],
         ["Operating weeks per year", str(pr["operating_weeks_per_year"]), ""],
-        ["Sessions per robot per week", str(pr["sessions_per_robot_per_week"]), "One slot kept for maintenance."],
+        ["Sessions available", "Set per day on the rota (0, 2 or 3)", "Maintenance is handled by setting fewer sessions."],
         ["Cases per robot per year: advisory level", f"{pr.get('max_cases_per_robot', 700):,}",
          "Amber guardrail above this level; activity is not cut."],
-        ["Minimum list fill", f"{pr.get('min_list_fill', 0.75):.0%}", "Lists below this fill are flagged."],
-        ["Maximum cases per session", str(pr.get("max_cases_per_session", 3)), "Template entries above this are flagged."],
-        ["Share of templated cases that go ahead", f"{pr.get('realisation_factor', 1.0):.0%}",
+        ["Share of rota cases that go ahead", f"{pr.get('realisation_factor', 1.0):.0%}",
          "Allows for cancellations. Placeholder."],
         ["Discount rate", f"{pr['discount_rate']:.1%}", "HM Treasury Green Book."],
         ["Public dividend capital", f"{pr['pdc_rate']:.1%}", "On average net book value."]], small=True))
@@ -734,9 +689,12 @@ def build_blocks(case, include_charts=True):
             return f"{x['procedure']}: {x['assumption']}" if x else i
         add(dict(type="h3", text="Clinical review of the register"))
         if review.get("changes"):
-            add(dict(type="table", header=["Assumption changed in review", "From", "To", "Comment"],
-                     widths=[3800, 1100, 1100, 3026],
+            srcs = review.get("sources", {})
+            add(dict(type="table", header=["Assumption changed in review", "From", "To", "Source and evidence grade",
+                                           "Comment"], widths=[2600, 800, 800, 2900, 1926],
                      rows=[[what(i), known[i]["value"] if i in known else "", str(v),
+                            "; ".join(x for x in (srcs.get(i, {}).get("source", ""), srcs.get(i, {}).get("grade", ""))
+                                      if x and x != "None"),
                             review.get("comments", {}).get(i, "")] for i, v in review["changes"].items()], small=True))
         if review.get("needs_evidence"):
             add(dict(type="p", text="Marked 'needs evidence' in review: " + "; ".join(
@@ -798,97 +756,45 @@ def template_blocks(r):
     cfg = r["config"]
     pr = cfg["programme"]
     ts = r["template_summary"]
-    out = [dict(type="h2", text="6.1 Two-week theatre template")]
-    variant = {"standard": "pre-filled from demand, standard day", "extended": "pre-filled from demand, extended day",
-               "custom": "entered by the trust"}.get(cfg.get("template_variant"), "entered by the trust")
+    out = [dict(type="h2", text="6.1 Two-week robot rota")]
+    src = "an example for this hospital type, edited by the trust" if cfg.get("template_variant") == "example" \
+        else "entered by the trust"
     out.append(dict(type="p", text=(
-        f"The template ({variant}) covers 14 days, Monday to Sunday twice, with three sessions a day on each robot "
-        f"(AM session 1, PM session 2, PM session 3). Each session is booked with one procedure; cases per session "
-        f"follow the procedure's complexity (Appendix A). Standard hours are weekday sessions 1 and 2, with Friday "
-        f"session 2 kept for maintenance; session 3 and weekend sessions count only when used. {ts['booked']} of {ts['available']} available sessions per fortnight are "
-        f"booked ({r['booked_utilisation']:.0%}). The fortnight is extrapolated to {pr['operating_weeks_per_year']} "
-        f"operating weeks a year, and {pr.get('realisation_factor', 1.0):.0%} of templated cases are assumed to go "
-        "ahead.")))
+        f"The rota ({src}) covers 14 days, Monday to Sunday twice, for each robot. For each day the trust sets the "
+        "sessions available (0, 2 or 3), and for each session the procedure and its cases; 'cont.' marks a case "
+        f"continuing from the previous session. {ts['booked']} of {ts['available']} available sessions per fortnight "
+        f"are booked ({r['booked_utilisation']:.0%}). The fortnight is extrapolated to "
+        f"{pr['operating_weeks_per_year']} operating weeks a year, and {pr.get('realisation_factor', 1.0):.0%} of rota "
+        f"cases are assumed to go ahead. The trust has {cfg.get('existing_robots', '0')} existing soft-tissue "
+        "robot(s).")))
     rows = []
     for k, g in r["groups"].items():
-        if g.get("template_cases", 0) < 0.5 and g["unmet_cases"] < 0.5:
+        if g["sessions_per_fortnight"] == 0:
             continue
-        rows.append([g["label"] + ("" if g.get("benefit_modelled", True) else " (30-day benefit not yet modelled)"),
-                     f"{g['sessions_per_fortnight']:.1f}", n0(g.get("template_cases", 0)),
-                     n0(g["ceiling"]) if cfg.get("demand_check", True) and k not in D.NOT_MODELLED else "not checked",
-                     n0(g["planned_cases"]), n0(g["unmet_cases"])])
-    out.append(dict(type="table", header=["Procedure", "Sessions per fortnight", "Cases on template (year)",
-                                          "Demand (year)", "Cases delivered", "Unmet demand"],
-                    widths=[3100, 1100, 1300, 1200, 1200, 1126], rows=rows, small=True))
-    out.append(dict(type="p", text=(f"Total unmet demand: {n0(r['unmet_cases'])} cases a year."
-                                    if r["unmet_cases"] >= 0.5 else "All demand entered is scheduled.")))
+        flag = {"not_yet_modelled": " (30-day benefit not yet modelled)",
+                "neutral": " (neutral, clinical lead)"}.get(g["benefit_status"], "")
+        rows.append([g["label"] + flag, str(g["sessions_per_fortnight"]),
+                     n0(ts["cases_per_fortnight"][k]), n0(g["planned_cases"])])
+    out.append(dict(type="table", header=["Procedure", "Sessions per fortnight", "Cases per fortnight",
+                                          "Cases a year"], widths=[4600, 1500, 1500, 1426], rows=rows, small=True))
     for rb in range(1, cfg["robots"] + 1):
         grid_rows = []
-        for w in (1, 2):
-            for d in D.DAYS:
-                row = [f"Week {w} {d}"]
-                for sname in D.SESSIONS:
-                    cell = next(x for x in ts["cells"] if x["robot"] == rb and x["week"] == w
-                                and x["day"] == d and x["session"] == sname)
-                    row.append(cell_text(cfg, cell))
-                if d in ("Sat", "Sun") and all(x == "" for x in row[1:]):
-                    continue
-                grid_rows.append(row)
-        out.append(dict(type="h3", text=f"Robot {rb}: two-week template"))
-        out.append(dict(type="table", header=["", "AM session 1", "PM session 2", "PM session 3"],
-                        widths=[1526, 2500, 2500, 2500],
-                        rows=grid_rows, small=True))
-    out.append(dict(type="p", text="Saturdays and Sundays are shown only where a session is in use."))
+        robot = cfg["template"][rb - 1]
+        for row in robot:
+            if not row.get("sessions"):
+                continue
+            cells = [x for x in ts["cells"] if x["robot"] == rb and x["week"] == row["week"] and x["day"] == row["day"]]
+            grid_rows.append([f"Week {row['week']} {row['day']}", str(row["sessions"])] + [
+                cell_text(cfg, c) for c in cells])
+        out.append(dict(type="h3", text=f"Robot {rb}: two-week rota"))
+        out.append(dict(type="table", header=["", "Sessions", "Session 1 (AM)", "Session 2 (PM)", "Session 3 (PM)"],
+                        widths=[1300, 1050, 2226, 2226, 2224], rows=grid_rows, small=True))
+    out.append(dict(type="p", text="Days with no sessions available are not shown."))
     return out
 
 
 def cell_text(cfg, cell):
     return T.cell_text(cfg, cell)
-
-
-def legacy_plan_blocks(r):
-    cfg = r["config"]
-    pr = cfg["programme"]
-    thr = pr.get("min_list_fill", 0.75)
-    out = [dict(type="h2", text="6.1 Fortnightly list plan")]
-    out.append(dict(type="p", text=(
-        f"Capacity is {r['capacity_per_fortnight']} sessions per fortnight ({pr['sessions_per_robot_per_week']} per "
-        f"robot per week, one weekly slot kept for maintenance); {r['booked_sessions_per_fortnight']:g} are booked "
-        f"and {r['spare_sessions_per_fortnight']:g} left free. A dedicated list is created only if it would be at "
-        f"least {thr:.0%} full; smaller remaining demand is pooled on a shared list, again only if that list would "
-        f"be at least {thr:.0%} full.")))
-    prow = []
-    for k, v in r["plan"].items():
-        if k == E.SHARED or not (v or r["groups"][k]["shared_cases"] >= 0.5):
-            continue
-        g = cfg["groups"][k]
-        go = r["groups"][k]
-        prow.append([g["label"], str(v), f"{g['cases_per_list']:g} per {'all-day' if g['list_sessions'] == 2 else 'half-day'} list",
-                     n0(go["dedicated_cases"]), n0(go["shared_cases"]), n0(go["unmet_cases"])])
-    if r["plan"].get(E.SHARED):
-        fill = r["shared"]["shared_fill"]
-        prow.append([E.shared_label(), str(r["plan"][E.SHARED]), f"half-day, {fill:.0%} full", "",
-                     n0(sum(g["shared_cases"] for g in r["groups"].values())), ""])
-    out.append(dict(type="table", header=["Specialty", "Sessions per fortnight", "List", "Cases on own lists",
-                                          "Cases on shared list", "Unmet demand"],
-                    widths=[3000, 1200, 1700, 1100, 1100, 926], rows=prow))
-    out.append(dict(type="p", text=(f"Total unmet demand: {n0(r['unmet_cases'])} cases a year."
-                                    if r["unmet_cases"] >= 0.5 else "All demand entered is scheduled.")))
-    days = ["Mon", "Tue", "Wed", "Thu", "Fri"]
-    for rb in range(1, cfg["robots"] + 1):
-        grid_rows = []
-        for w in (1, 2):
-            for sname in ("AM", "PM"):
-                row = [f"Week {w} {sname}"]
-                for d in days:
-                    cell = next((x for x in r["grid"] if x["robot"] == rb and x["week"] == w
-                                 and x["day"] == d and x["session"] == sname), None)
-                    row.append("Maintenance" if cell is None else
-                               (E.slot_label(cfg, cell["group"]) if cell["group"] else "Unbooked"))
-                grid_rows.append(row)
-        out.append(dict(type="h3", text=f"Robot {rb}: two-week rota"))
-        out.append(dict(type="table", header=[""] + days, widths=[1426] + [1520] * 5, rows=grid_rows, small=True))
-    return out
 
 
 if __name__ == "__main__":

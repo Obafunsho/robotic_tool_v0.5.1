@@ -1,5 +1,5 @@
-# Institutional theme for the Robotic Programme Decision Tool (v0.6).
-# Fonts are Streamlit's bundled Source Sans and Source Serif; ./static holds the favicon.
+# Theme for the Robotic Programme Decision Tool (v0.8).
+# Font is Arial (system font); ./static holds the favicon.
 
 [server]
 enableStaticServing = true
@@ -12,22 +12,21 @@ showErrorDetails = "none"
 gatherUsageStats = false
 
 [theme]
+# v0.8: plain, high-contrast style familiar to NHS users (Arial, black text, simple tables).
+# Not an NHS product: no NHS name, logo or colour palette is used.
 base = "light"
-primaryColor = "#1F3864"
+primaryColor = "#0B0C0C"
 backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F3F5F8"
-textColor = "#1B1F24"
-linkColor = "#1F3864"
-borderColor = "#D5DAE1"
+secondaryBackgroundColor = "#F3F2F1"
+textColor = "#0B0C0C"
+linkColor = "#0B0C0C"
+borderColor = "#B1B4B6"
 showWidgetBorder = true
-baseRadius = "small"
-# Streamlit's bundled faces: "sans-serif" is Source Sans and "serif" is Source Serif.
-# (v0.6.0 used [[theme.fontFaces]] with locally served files; in Chromium those
-# rules never registered and every element fell back to Times New Roman.)
-font = "sans-serif"
-headingFont = "serif"
-headingFontWeights = [600, 600, 600, 600, 600, 600]
-baseFontSize = 15
+baseRadius = "none"
+font = "Arial"
+headingFont = "Arial"
+headingFontWeights = [700, 700, 700, 700, 700, 700]
+baseFontSize = 16
 
 [theme.sidebar]
-backgroundColor = "#F3F5F8"
+backgroundColor = "#F3F2F1"

@@ -10,9 +10,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-NAVY = "#1F3864"
-TEAL = "#2E8B8B"
-GREY = "#8C8C8C"
+NAVY = "#000000"      # v0.8: greyscale charts
+TEAL = "#9E9E9E"
+GREY = "#6E6E6E"
 LIGHT = "#BFBFBF"
 logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 plt.rcParams.update({"font.family": "sans-serif",
@@ -70,7 +70,7 @@ COST_PARTS = [("platform_fixed", "Platform"), ("instruments", "Instruments"),
               ("theatre_time_cost", "Extra theatre time"),
               ("implementation", "Implementation and training"),
               ("theatre_modification", "Theatre works")]
-PART_COLOURS = [NAVY, TEAL, "#7FA7C9", "#A9C5A0", "#C9B37F", "#B0B0B0", "#D9D9D9"]
+PART_COLOURS = ["#1A1A1A", "#4D4D4D", "#737373", "#999999", "#B3B3B3", "#CCCCCC", "#E0E0E0"]
 
 
 def cost_offset_png(yearly):
@@ -84,7 +84,7 @@ def cost_offset_png(yearly):
             continue
         ax.bar(years, vals, bottom=bottom, color=col, label=lab, width=0.6)
         bottom = [b + v for b, v in zip(bottom, vals)]
-    ax.plot(years, [y["offsets"] / 1e3 for y in yearly], color="#C00000", marker="o", lw=1.5,
+    ax.plot(years, [y["offsets"] / 1e3 for y in yearly], color="#000000", marker="o", lw=1.5, linestyle="--",
             label="30-day cost avoided (not cash)")
     ax.set_xticks(years)
     ax.set_xticklabels([f"Year {y}" for y in years])

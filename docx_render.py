@@ -16,10 +16,11 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
-NAVY = RGBColor(0x1F, 0x38, 0x64)
-DRAFT_RED = RGBColor(0xC0, 0x00, 0x00)
+BLACK = RGBColor(0, 0, 0)
+NAVY = BLACK          # v0.8: black text throughout (NHS-familiar plain style)
+DRAFT_RED = BLACK
 HEADER_TEXT = "DRAFT: assumptions awaiting specialty review. Not for approval."
-GREY = RGBColor(0x59, 0x59, 0x59)
+GREY = BLACK
 STATUS_FILL = {"Green": "C6EFCE", "Amber": "FFEB9C", "Red": "FFC7CE"}
 FONT = "Arial"
 CONTENT_DXA = 9026
@@ -87,9 +88,9 @@ def _table(doc, b):
         gc.set(qn("w:w"), str(w))
     for i, h in enumerate(b["header"]):
         c = t.rows[0].cells[i]
-        _shade(c, "1F3864")
+        _shade(c, "D9D9D9")
         c.paragraphs[0].text = ""
-        _runs(c.paragraphs[0], h, size=size, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+        _runs(c.paragraphs[0], h, size=size, bold=True, color=BLACK)
     trPr = t.rows[0]._tr.get_or_add_trPr()
     th = OxmlElement("w:tblHeader")
     th.set(qn("w:val"), "true")
