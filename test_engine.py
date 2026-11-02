@@ -2,10 +2,10 @@
 Tests for the robotic programme decision engine (v0.8).
 
 Layers:
-  A. Hand-calculated toy case on a rota (every number worked out on paper).
+  A. Hand-calculated toy operation on a rota (every number worked out on paper).
   B. Invariants across presets, platforms and evidence settings.
-  C. Independent cross-check of cost avoided and rota cases.
-  D. Rota input: sessions available, cases, "cont.", validation, examples, web conversion.
+  C. Independent cross-check of cost avoided and rota operations.
+  D. Rota input: sessions available, operations, "cont.", validation, examples, web conversion.
   E. Clinical lead's literature review applied as defaults.
   F. Removals and simplifications (demand, single-port, complexity, hospital type).
   G. Existing robots, unit costs and advanced inputs.
@@ -26,7 +26,6 @@ import business_case as BC
 import defaults as D
 import engine as E
 import evidence_review as ER
-import inputs_io as IO
 import register as RG
 import register_xlsx as RX
 import sensitivity as S
@@ -38,7 +37,7 @@ ALL = list(itertools.product(D.PRESETS, PLATFORMS, D.EVIDENCE_SETTINGS))
 
 
 def rota(entries, sessions=None, robots=1):
-    """Build a rota. entries: {(robot, week, day, session): (procedure, cases)};
+    """Build a rota. entries: {(robot, week, day, session): (procedure, operations)};
     sessions: {(robot, week, day): n} (others keep the default: weekdays 2, weekends 0)."""
     g = T.empty_grid(robots)
     for (rb, w, d), n in (sessions or {}).items():
@@ -57,7 +56,7 @@ TOY_ROTA = rota({(1, 1, "Mon", "AM"): ("colectomy", 4), (1, 1, "Mon", "PM"): ("c
 
 
 def toy_cfg(**prog):
-    """One robot, colectomy only: 5 cases a fortnight x 20 fortnights = 100 cases a year.
+    """One robot, colectomy only: 5 operations a fortnight x 20 fortnights = 100 operations a year.
     8 sessions available (Mon and Tue, both weeks), 2 booked."""
     groups = dict(colectomy=dict(
         p_open=0.5, los_reduction_open=2, los_reduction_lap=1, conv_reduction_lap=0.1,
@@ -212,8 +211,8 @@ def test_capacity_value_toggle():
 def test_guardrails_present_and_valid():
     g = E.run(E.build_config())["guardrails"]
     assert [x["check"] for x in g] == [
-        "Robotic cases per robot per year", "Procedures with 30-day benefit not yet modelled",
-        "Robot utilisation (sessions booked / available)", "Share of robotic cases displacing open surgery (advisory)",
+        "Robotic operations per robot per year", "Procedures with 30-day benefit not yet modelled",
+        "Robot utilisation (sessions booked / available)", "Share of robotic operations displacing open surgery (advisory)",
         "Instrument price basis", "Platform price", "Assumptions changed from defaults"]
     assert all(x["status"] in ("green", "amber", "red") for x in g)
 
@@ -311,8 +310,8 @@ def test_rota_validation_messages():
     g[0][4]["sessions"] = 1
     text = " ".join(T.summarise(tcfg(g))["issues"])
     assert "not available on this day" in text
-    assert "cases entered without a procedure" in text
-    assert "no cases entered" in text
+    assert "operations entered without a procedure" in text
+    assert "no operations entered" in text
     assert "is not a listed procedure" in text
     assert "sessions available must be 0, 2 or 3" in text
     r = E.run(tcfg(g))
@@ -325,7 +324,7 @@ def test_case_options_and_no_maintenance_option():
     opts = T.procedure_options(cfg)
     assert opts[0] == "Unfilled session" and len(opts) == 18
     assert "Maintenance" not in opts and "Closed" not in opts
-    assert "Rectal resection" in opts and T.case_options()[0] == T.BLANK_CASES
+    assert "Rectal resection (anterior resection, APR)" in opts and T.case_options()[0] == T.BLANK_CASES
 
 
 @pytest.mark.parametrize("preset", D.PRESETS)
@@ -349,7 +348,7 @@ def test_ui_rows_round_trip():
         assert all(v not in ("", None, "None") for row in rows for v in row.values())
         assert T.from_ui_rows(cfg, rows) == robot
     rows = T.to_ui_rows(cfg, cfg["template"][0])
-    odd = dict(rows[0], **{"Session 1 (AM): procedure": None, "Session 1 cases": float("nan")})
+    odd = dict(rows[0], **{"Session 1 (AM): procedure": None, "Session 1 operations": float("nan")})
     back = T.from_ui_rows(cfg, [odd])[0]
     assert back["AM_proc"] == "" and back["AM_cases"] == ""
 
@@ -446,8 +445,8 @@ def test_prostatectomy_tariff_uplift_default_3000():
                                                                      "platform": "platform_b"}},
                                     include_charts=False)[0])
     assert "Less tariff uplift (difference over existing tariff)" in text
-    assert "default tariff uplift of £3,000 per case" in text
-    assert "Extra income per case" not in text and "extra tariff income" not in text.lower()
+    assert "default tariff uplift of £3,000 per operation" in text
+    assert "Extra income per operation" not in text and "extra tariff income" not in text.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +486,8 @@ def test_existing_robots_stated_but_not_in_maths(n):
     case = {"cover": {}, "configuration": {"preset": "medium_dgh_1", "robots": 1, "platform": "platform_b",
                                            "existing_robots": n}}
     blocks, r = BC.build_blocks(case, include_charts=False)
-    assert f"currently has {n} existing soft-tissue robot(s)" in all_text(blocks)
+    assert D.existing_robots_text(n) in all_text(blocks)
+    assert "robot(s)" not in all_text(blocks)
     base = E.run(E.build_config())
     assert r["totals"]["extra_cost"] == pytest.approx(base["totals"]["extra_cost"])
 
@@ -562,7 +562,7 @@ def test_700_per_robot_is_advisory_not_a_cut():
     r = E.run(tcfg(g))
     assert r["yearly"][2]["cases"] == pytest.approx(80 * 22.5)          # 1,800, not cut
     assert any("(advisory)" in w for w in r["warnings"])
-    assert next(x for x in r["guardrails"] if x["check"] == "Robotic cases per robot per year")["status"] == "amber"
+    assert next(x for x in r["guardrails"] if x["check"] == "Robotic operations per robot per year")["status"] == "amber"
 
 
 def test_cancellation_factor_scales_delivery():
@@ -605,9 +605,9 @@ def test_tornado_base_and_ordering(metric):
 
 def test_tornado_includes_prostatectomy_and_cancellations():
     names = [b["name"] for b in S.tornado(E.build_config("large_1"), "cost_per_bed_day")["bars"]]
-    assert "Prostatectomy comparator" in names and "Bed-days saved per case" in names
+    assert "Prostatectomy comparator" in names and "Bed-days saved per operation" in names
     names = [b["name"] for b in S.tornado(E.build_config("large_1"), "extra_cost")["bars"]]
-    assert "Share of rota cases that go ahead" in names
+    assert "Share of rota operations that go ahead" in names
 
 
 def test_register_rows():
@@ -686,20 +686,6 @@ def test_register_rejects_wrong_file():
     assert RX.load(buf.getvalue())["errors"] == ["No 'Register' sheet found."]
 
 
-def test_inputs_round_trip():
-    case = json.load(open(EX / "example_case.json"))
-    case["configuration"].update(template=TOY_ROTA, existing_robots="3", programme={"realisation_factor": 0.85})
-    parsed, err = IO.parse_case(json.dumps(case))
-    assert err is None
-    st = IO.widget_state(parsed)
-    assert st["w_realisation"] == 85 and st["w_existing"] == "3"
-    r = E.run(E.build_config(**BC.configure(parsed)))
-    assert r["template_summary"]["booked"] == 2
-    assert IO.parse_case(b"not json")[1] is not None
-    old = dict(case, configuration=dict(case["configuration"], platform="platform_d"))
-    assert IO.parse_case(json.dumps(old))[1] is not None
-
-
 # ---------------------------------------------------------------------------
 # J. Business case and Word document
 # ---------------------------------------------------------------------------
@@ -731,7 +717,8 @@ def test_business_case_blocks_build(preset, platform):
     blocks, r = BC.build_blocks(case, include_charts=False)
     heads = [b["text"] for b in blocks if b["type"] == "h1"]
     for h in ("1. Executive summary", "2. Strategic case", "3. Economic case", "4. Commercial case",
-              "5. Financial case", "6. Management case", "Appendix D. Assumptions register"):
+              "5. Financial case", "6. Management case", "Appendix A. Clinical assumptions by specialty",
+              "Appendix D. References"):
         assert h in heads
     text = all_text(blocks)
     for s in SUPPLIERS:
@@ -768,3 +755,83 @@ def test_word_document_black_text_and_charts():
     xml = doc.tables[1]._tbl.xml
     assert 'w:fill="D9D9D9"' in xml and "1F3864" not in xml
     assert len(doc.inline_shapes) == 3
+
+
+# ---------------------------------------------------------------------------
+# K. v1.1.0: labels, wording, Word changes
+# ---------------------------------------------------------------------------
+NEW_LABELS = {
+    "bariatric_antireflux": "Bariatric and anti-reflux surgery (gastric bypass, sleeve gastrectomy, fundoplication)",
+    "colectomy": "Colectomy (right and left hemicolectomy, sigmoid colectomy)",
+    "abdo_wall_repair": "Complex abdominal wall repair (incisional and ventral hernia, component separation)",
+    "inguinal": "Complex inguinal hernia (recurrent, bilateral or large)",
+    "liver": "Liver resection (hepatectomy, segmentectomy)",
+    "lobectomy_transoral": "Lobectomy and transoral surgery (lung lobectomy, TORS)",
+    "og_resection": "Oesophagogastric resection (oesophagectomy, gastrectomy)",
+    "rectal": "Rectal resection (anterior resection, APR)",
+}
+
+
+def test_version_and_common_name_labels():
+    assert D.ENGINE_VERSION == "1.1.0"
+    for k, lab in NEW_LABELS.items():
+        assert D.PROCEDURE_GROUPS[k]["label"] == lab
+    ids = {r["id"] for r in RX.register_rows()}
+    assert "rectal.los_reduction_lap" in ids and "og_resection.p_open" in ids      # IDs unchanged
+
+
+@pytest.mark.parametrize("n,text", [("0", "The trust has no existing soft-tissue robots"),
+                                    ("1", "The trust has one existing soft-tissue robot"),
+                                    ("3", "The trust has three existing soft-tissue robots"),
+                                    ("5 or more", "The trust has five or more existing soft-tissue robots")])
+def test_existing_robots_wording(n, text):
+    assert D.existing_robots_text(n) == text
+
+
+def test_intro_and_not_modelled_notes():
+    assert D.INTRO_LINE.startswith("A 30-day cost-consequence model to help you understand the best cost configuration")
+    assert D.INTRO_LINE.endswith("It is not a QALY-based health economic model.")
+    assert D.NOT_MODELLED_NOTE == "Simple cholecystectomy and simple inguinal hernia are not modelled."
+
+
+_NOT_OPS = ["business", "Business", "base", "Base", "cash", "Cash", "economic", "Economic", "financial", "Financial",
+            "commercial", "Commercial", "strategic", "Strategic", "management", "Management", "this", "This", "the",
+            "The", "Five", "trust's", "hand-calculated"]
+OPERATION_WORDS = re.compile("".join(f"(?<!{w} )" for w in _NOT_OPS) + r"\b[Cc]ases?\b(?! for)(?! study)")
+
+
+@pytest.mark.parametrize("preset", ["medium_dgh_1", "large_2"])
+def test_operations_wording_in_business_case(preset):
+    case = {"cover": {}, "configuration": {"preset": preset, "robots": D.PRESETS[preset]["robots"],
+                                           "platform": "platform_b"}}
+    blocks, _ = BC.build_blocks(case, include_charts=False)
+    body = all_text([b for b in blocks if b["type"] != "numbered"])        # references keep their titles
+    hits = OPERATION_WORDS.findall(body)
+    assert hits == [], [m.start() for m in OPERATION_WORDS.finditer(body)][:5]
+    assert "operations a year" in body or "Operations a year" in body
+
+
+def test_operations_wording_in_register():
+    rows = RX.register_rows()
+    text = " ".join(f"{r['assumption']} {r['unit']}" for r in rows)
+    assert not OPERATION_WORDS.findall(text)
+    assert any("per operation" in r["unit"] for r in rows)
+
+
+def test_word_case_has_no_register_appendix_but_says_where_it_is():
+    blocks, _ = BC.build_blocks(json.load(open(EX / "example_case.json")), include_charts=False)
+    h1 = [b["text"] for b in blocks if b["type"] == "h1"]
+    assert "Appendix D. Assumptions register" not in h1 and h1[-1] == "Appendix D. References"
+    text = all_text(blocks)
+    assert BC.REGISTER_LINE in text
+    assert "Appendix A. Clinical assumptions by specialty" in h1
+
+
+def test_word_headings_use_arial_without_theme_fonts():
+    import zipfile
+    data, _ = BC.build_docx_bytes(json.load(open(EX / "example_case.json")), include_charts=False)
+    styles = zipfile.ZipFile(io.BytesIO(data)).read("word/styles.xml").decode()
+    for sid in ("Heading1", "Heading2", "Heading3", "Title"):
+        i = styles.index(f'w:styleId="{sid}"')
+        block = styles[i:styles.index("</w:style>", i)]
+        assert 'w:ascii="Arial"' in block and "asciiTheme" not in block and "hAnsiTheme" not in block, sid

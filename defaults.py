@@ -8,8 +8,8 @@ any benefit prior that differs from these defaults as "user-modified".
 Sign convention (deliberately clinician-friendly):
   *_reduction  : positive number = benefit of robotic over comparator
                  (e.g. los_reduction_open = 2.0 means 2 fewer bed-days)
-  extra_minutes: positive number = robotic case takes longer
-All absolute event values are proportions per case (0.02 = 2 percentage points).
+  extra_minutes: positive number = robotic operation takes longer
+All absolute event values are proportions per operation (0.02 = 2 percentage points).
 
 Anti-double-counting rule:
   los_reduction_* is the TOTAL difference in mean index length of stay,
@@ -18,7 +18,7 @@ Anti-double-counting rule:
   except readmission, which is a separate spell and is costed in full.
 """
 
-ENGINE_VERSION = "1.0.0"
+ENGINE_VERSION = "1.1.0"
 
 # ---------------------------------------------------------------------------
 # Procedures (clinical lead's list of 17; v0.8 values after the literature review)
@@ -49,19 +49,19 @@ def _g(label, specialty, complexity, p_open, nhse_priority, benefit_status, rati
 
 PROCEDURE_GROUPS = {
     "bariatric_antireflux": _g(
-        'Bariatric and anti-reflux surgery', 'Oesophagogastric', 'Medium', 0.05, False,
+        'Bariatric and anti-reflux surgery (gastric bypass, sleeve gastrectomy, fundoplication)', 'Oesophagogastric', 'Medium', 0.05, False,
         'modelled',
         'Almost all laparoscopic without a robot.',
         'Carried over from upper GI (anti-reflux and hiatal hernia); bariatric surgery added.',
         los_reduction_open=2.0, los_reduction_lap=0.2, conv_reduction_lap=0.02, reop_reduction_open=0.005, reop_reduction_lap=0.0, comp_reduction_open=0.02, comp_reduction_lap=0.005, readm_reduction_open=0.0, readm_reduction_lap=0.0, extra_minutes_open=30, extra_minutes_lap=20),
     "colectomy": _g(
-        'Colectomy (right, left, sigmoid)', 'Colorectal', 'Medium', 0.1, False,
+        'Colectomy (right and left hemicolectomy, sigmoid colectomy)', 'Colorectal', 'Medium', 0.1, False,
         'modelled',
-        'Most suitable cases are already laparoscopic; robot displaces some open (e.g. obese, pelvic, re-do).',
+        'Most suitable operations are already laparoscopic; robot displaces some open (e.g. obese, pelvic, re-do).',
         'Carried over from colorectal major resection.',
         los_reduction_open=2.0, los_reduction_lap=0.5, conv_reduction_lap=0.05, reop_reduction_open=0.02, reop_reduction_lap=0.005, comp_reduction_open=0.04, comp_reduction_lap=0.01, readm_reduction_open=0.01, readm_reduction_lap=0.0, extra_minutes_open=30, extra_minutes_lap=40.0),
     "abdo_wall_repair": _g(
-        'Complex abdominal wall repair', 'Abdo wall complex', 'High', 0.7, True,
+        'Complex abdominal wall repair (incisional and ventral hernia, component separation)', 'Abdo wall complex', 'High', 0.7, True,
         'modelled',
         'Most ventral and incisional repairs are open without a robot.',
         'Carried over from abdominal wall reconstruction; 30-day assumptions still those set for ventral and incisional hernia (flagged).',
@@ -69,8 +69,8 @@ PROCEDURE_GROUPS = {
     "benign_gyn": _g(
         'Complex benign gynaecology (hysterectomy, myomectomy, endometriosis, sacrocolpopexy)', "Women's health", 'Medium', 0.4667, True,
         'modelled',
-        'Mix of hysterectomy, myomectomy and endometriosis counterfactuals, weighted by v0.7 case volumes.',
-        'Merged: benign 70% of hysterectomy (70 cases), myomectomy (25) and endometriosis (40); assumptions weighted by v0.7 case volumes. Sacrocolpopexy added. Adnexal surgery dropped.',
+        'Mix of hysterectomy, myomectomy and endometriosis counterfactuals, weighted by v0.7 operation volumes.',
+        'Merged: benign 70% of hysterectomy (70 operations), myomectomy (25) and endometriosis (40); assumptions weighted by v0.7 operation volumes. Sacrocolpopexy added. Adnexal surgery dropped.',
         los_reduction_open=1.5, los_reduction_lap=0.2, conv_reduction_lap=0.01, reop_reduction_open=0.0041, reop_reduction_lap=0.0, comp_reduction_open=0.027, comp_reduction_lap=0.0, readm_reduction_open=0.005, readm_reduction_lap=0.0, extra_minutes_open=21.8519, extra_minutes_lap=40.0),
     "breast": _g(
         'Complex breast (mastectomy, flap reconstruction)', 'Breast', 'Medium', 1.0, False,
@@ -85,7 +85,7 @@ PROCEDURE_GROUPS = {
         'New procedure. 30-day benefit not yet modelled (zero placeholder).',
         los_reduction_open=0.0, los_reduction_lap=0.0, conv_reduction_lap=0.0, reop_reduction_open=0.0, reop_reduction_lap=0.0, comp_reduction_open=0.0, comp_reduction_lap=0.0, readm_reduction_open=0.0, readm_reduction_lap=0.0, extra_minutes_open=0.0, extra_minutes_lap=12.0),
     "inguinal": _g(
-        'Complex inguinal hernia', 'Abdo wall complex', 'Low', 0.3, False,
+        'Complex inguinal hernia (recurrent, bilateral or large)', 'Abdo wall complex', 'Low', 0.3, False,
         'not_yet_modelled',
         'Placeholder: complex repairs would otherwise be open or laparoscopic.',
         'New procedure: complex repairs only (recurrent, bilateral or large); standard inguinal repair stays excluded as HVLC. 30-day benefit not yet modelled (zero placeholder).',
@@ -99,17 +99,17 @@ PROCEDURE_GROUPS = {
     "gyn_oncology": _g(
         'Gynaecological oncology (radical and cancer hysterectomy)', "Women's health", 'High', 0.5, True,
         'modelled',
-        'Complex cases offered to the robot (large uterus, obesity) are often open otherwise.',
+        'Complex operations offered to the robot (large uterus, obesity) are often open otherwise.',
         'Split from hysterectomy (benign and malignant): malignant share 30% (placeholder); assumptions carried over from hysterectomy.',
         los_reduction_open=1.5, los_reduction_lap=0.2, conv_reduction_lap=0.04, reop_reduction_open=0.005, reop_reduction_lap=0.0, comp_reduction_open=0.04, comp_reduction_lap=0.0, readm_reduction_open=0.005, readm_reduction_lap=0.0, extra_minutes_open=30.0, extra_minutes_lap=20),
     "liver": _g(
-        'Liver resection', 'Hepatopancreatobiliary', 'High', 0.7, False,
+        'Liver resection (hepatectomy, segmentectomy)', 'Hepatopancreatobiliary', 'High', 0.7, False,
         'not_yet_modelled',
         'Placeholder: many liver resections are still open.',
         'New procedure (whole day). 30-day benefit not yet modelled (zero placeholder).',
         los_reduction_open=0.0, los_reduction_lap=0.0, conv_reduction_lap=0.0, reop_reduction_open=0.0, reop_reduction_lap=0.0, comp_reduction_open=0.0, comp_reduction_lap=0.0, readm_reduction_open=0.0, readm_reduction_lap=0.0, extra_minutes_open=0.0, extra_minutes_lap=0.0),
     "lobectomy_transoral": _g(
-        'Lobectomy and transoral surgery', 'Thoracic and head and neck', 'High', 0.8, False,
+        'Lobectomy and transoral surgery (lung lobectomy, TORS)', 'Thoracic and head and neck', 'High', 0.8, False,
         'modelled',
         'Counterfactual is open access surgery; non-surgical treatment is not modelled.',
         'Carried over from head and neck (transoral robotic surgery); lobectomy added with the same placeholder assumptions (flagged).',
@@ -121,7 +121,7 @@ PROCEDURE_GROUPS = {
         'Carried over unchanged.',
         los_reduction_open=2.0, los_reduction_lap=0.3, conv_reduction_lap=0.03, reop_reduction_open=0.005, reop_reduction_lap=0.0, comp_reduction_open=0.03, comp_reduction_lap=0.005, readm_reduction_open=0.005, readm_reduction_lap=0.0, extra_minutes_open=20, extra_minutes_lap=15),
     "og_resection": _g(
-        'Oesophagogastric resection', 'Oesophagogastric', 'High', 0.5, False,
+        'Oesophagogastric resection (oesophagectomy, gastrectomy)', 'Oesophagogastric', 'High', 0.5, False,
         'not_yet_modelled',
         'Placeholder: many oesophagogastric resections are open or hybrid.',
         'New procedure (whole day). 30-day benefit not yet modelled (zero placeholder).',
@@ -142,12 +142,12 @@ PROCEDURE_GROUPS = {
         'Radical prostatectomy', 'Urology', 'High', 1.0, False,
         'modelled',
         'Comparator is open surgery. Robotic prostatectomy is established NHS practice, so robotic care at another centre is shown as a sensitivity scenario.',
-        'Carried over unchanged. Cases per session fall from 1.5 to 1 under the complexity defaults.',
+        'Carried over unchanged. Operations per session fall from 1.5 to 1 under the complexity defaults.',
         los_reduction_open=2.0, los_reduction_lap=0.5, conv_reduction_lap=0.02, reop_reduction_open=0.005, reop_reduction_lap=0.0, comp_reduction_open=0.02, comp_reduction_lap=0.005, readm_reduction_open=0.005, readm_reduction_lap=0.0, extra_minutes_open=0, extra_minutes_lap=0),
     "rectal": _g(
-        'Rectal resection', 'Colorectal', 'High', 0.1, False,
+        'Rectal resection (anterior resection, APR)', 'Colorectal', 'High', 0.1, False,
         'modelled',
-        'Most suitable cases are already laparoscopic; robot displaces some open (e.g. obese, pelvic, re-do).',
+        'Most suitable operations are already laparoscopic; robot displaces some open (e.g. obese, pelvic, re-do).',
         'Carried over from colorectal major resection (same placeholder assumptions, flagged).',
         los_reduction_open=2.0, los_reduction_lap=0.5, conv_reduction_lap=0.05, reop_reduction_open=0.02, reop_reduction_lap=0.01, comp_reduction_open=0.04, comp_reduction_lap=0.01, readm_reduction_open=0.01, readm_reduction_lap=0.0, extra_minutes_open=30, extra_minutes_lap=20),
 }
@@ -175,7 +175,7 @@ EVIDENCE_NOTES = {
                "cancer resections open in 2023."),
     "prostatectomy": ("Excluded from NICE's 2025 early value assessment because robotic prostatectomy is established "
                       "NHS practice. Effect sizes versus open are placeholders."),
-    "benign_gyn": ("Merged from hysterectomy, myomectomy and endometriosis (weighted by v0.7 case volumes). In England about half of "
+    "benign_gyn": ("Merged from hysterectomy, myomectomy and endometriosis (weighted by v0.7 operation volumes). In England about half of "
                    "hysterectomies were laparoscopic by 2011-17 (Madhvani et al, cited in Clark and Saridogan 2021). "
                    "Effect sizes are placeholders."),
     "gyn_oncology": ("Carried over from hysterectomy (benign and malignant); conversion, complication and theatre-time "
@@ -250,7 +250,7 @@ PLATFORMS = {
         maintenance_per_year=150_000, instruments_per_case=1500, illustrative=False,
         source=("Capital from a published NHS trust business case (May 2026; reference to be re-confirmed). "
                 "Of the same order as an earlier NHS full business case (about £2 million capital and £150,000 "
-                "maintenance a year). Instruments: US single-centre average about $1,500 per case")),
+                "maintenance a year). Instruments: US single-centre average about $1,500 per operation")),
     "platform_c": dict(
         label="Platform C: modular (managed service)", model="managed_service",
         annual_fee=450_000, cases_included=300, excess_fee_per_case=1200,
@@ -386,7 +386,7 @@ BENCHMARK = dict(
 FIELD_LABELS = {
     "p_open": "share open without the robot",
     "p_robot_elsewhere": "share robotic at another centre without the robot",
-    "cases_per_list": "cases per list",
+    "cases_per_list": "operations per list",
     "los_reduction_open": "bed-days saved versus open",
     "los_reduction_lap": "bed-days saved versus laparoscopic",
     "conv_reduction_lap": "conversions avoided versus laparoscopic",
@@ -402,13 +402,13 @@ FIELD_LABELS = {
     "comp": "major complications avoided", "readm": "readmissions avoided",
     "extra_minutes": "extra theatre minutes", "share": "share",
     "tariff_uplift": "tariff uplift (difference over existing tariff)",
-    "cases_per_session": "cases per session", "whole_day": "whole-day procedure",
+    "cases_per_session": "operations per session", "whole_day": "whole-day procedure",
 }
 UNIT_COST_LABELS = {
     "bed_day": "Excess bed-day", "reoperation": "Return to theatre (non-ward)",
     "major_complication": "Major complication (non-ward)", "readmission": "Readmission (full spell)",
     "conversion": "Conversion to open (non-ward)", "theatre_minute": "Extra theatre minute",
-    "decontamination_per_case": "Sterile services per robotic case",
+    "decontamination_per_case": "Sterile services per robotic operation",
 }
 
 
@@ -478,3 +478,18 @@ TARIFF_GRADES = {"prostatectomy": "Clinical lead input"}
 for _k, _v in TARIFF_DEFAULTS.items():
     PROCEDURE_GROUPS[_k]["tariff_uplift"] = _v
 DEFAULT_TARIFF_SOURCE = "No robotic price difference identified: £0."
+
+NOT_MODELLED_NOTE = "Simple cholecystectomy and simple inguinal hernia are not modelled."
+INTRO_LINE = ("A 30-day cost-consequence model to help you understand the best cost configuration for your robotic "
+              "programme, based on a two-week rota. It is not a QALY-based health economic model.")
+_NUMBER_WORDS = {"1": "one", "2": "two", "3": "three", "4": "four", "5 or more": "five or more"}
+
+
+def existing_robots_text(n):
+    """'The trust has no existing soft-tissue robots' / 'one existing soft-tissue robot' / 'N existing ...'."""
+    n = str(n)
+    if n == "0":
+        return "The trust has no existing soft-tissue robots"
+    if n == "1":
+        return "The trust has one existing soft-tissue robot"
+    return f"The trust has {_NUMBER_WORDS.get(n, n)} existing soft-tissue robots"

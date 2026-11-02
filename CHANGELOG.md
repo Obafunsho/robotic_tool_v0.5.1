@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.1.0 (November 2026)
+
+Feedback from colleagues who tested v1.0.0, signed off by the clinical lead. The aim is a first view that is as simple as possible.
+
+Fixes
+- "Generate Word business case" and the download buttons now show white text on black; secondary buttons show black text on white.
+- Dropdown menus now show black text on white, with the selected or hovered option on light grey.
+- Both fixes were confirmed in Chromium: computed colours were checked, and screenshots taken of the button and the open platform dropdown.
+- Rota column headers read "Session 1 (AM)", "Operations", and so on, and fit at laptop width (1366 pixels).
+- Word headings now render in Arial. The heading styles carried theme-font attributes, which Word gives precedence over the explicit Arial; these are removed.
+- Existing robots now read naturally: "The trust has no existing soft-tissue robots", "one existing soft-tissue robot" or "three existing soft-tissue robots".
+
+Main page
+- A single page with no sidebar.
+  - At the top: the line "A 30-day cost-consequence model to help you understand the best cost configuration for your robotic programme, based on a two-week rota. It is not a QALY-based health economic model."
+  - Main view: hospital type (sets the example rota), number of robots and platform, then the rota, headline results, trust name and the Word business case button.
+- Everything else is in one "Advanced settings" section, arranged in tabs:
+  - settings: existing robots, prostatectomy comparator, instrument price, central capital, contract basis, clinical benefit setting, rota operations that go ahead, value of released bed-days;
+  - platform prices, unit costs and the tariff uplift;
+  - procedure details and clinical assumptions;
+  - the assumptions register (download and reload);
+  - detailed results: the year-by-year table, cost chart, per-procedure table, price targets, other warnings and changed assumptions;
+  - sensitivity and benchmark;
+  - business case cover details.
+- Rota warnings appear on the main page only when the rota has an error.
+- "Simple cholecystectomy and simple inguinal hernia are not modelled." appears beside the rota and the procedure list.
+- Removed: reloading a saved case, the "Save these inputs (.json)" download, and the inputs module that supported them. Each use is now a one-off.
+
+Wording
+- "Operations" replaces "cases" for surgical activity throughout the website, the Word business case and the register ("Operations per session", "Rota operations that go ahead (%)", "Extra cost per operation"). "Case" is kept for the business case, the five cases of the Five Case Model and the cash case. Published titles and the literature review's text are unchanged. Register IDs are unchanged, so a completed register still loads.
+- Common names added to eight procedure labels: bariatric and anti-reflux surgery, colectomy, complex abdominal wall repair, complex inguinal hernia, liver resection, lobectomy and transoral surgery, oesophagogastric resection, and rectal resection (anterior resection, APR).
+
+Business case
+- The full assumptions register (formerly Appendix D) is removed. A line in Appendix A says it is available as a separate download from the tool.
+- Appendix A (clinical assumptions) is kept. A loaded clinical review still appears in Appendix C, and References become Appendix D.
+
+Tests: 319, up from 314. The saved-case test was removed with that feature; new tests cover the labels, existing-robot wording, the intro and not-modelled lines, operations wording (Word and register), the removed register appendix, Arial headings, the single-page layout and Advanced settings, the "Operations" rota headers, the absence of save and reload, and primary buttons.
+
 ## 1.0.0 (November 2026)
 
 The clinical lead's final change.

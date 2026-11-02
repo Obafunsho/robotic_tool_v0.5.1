@@ -3,20 +3,20 @@ Robotic programme decision engine: 30-day cost-consequence analysis (v0.8).
 
 Pipeline (each step is a small, separately testable function):
   1. rota                two-week rota per robot: sessions available per day (0, 2 or 3) and,
-                         per session, a procedure and its cases (1-4 or "cont.")
-  2. cases               cases per fortnight x operating fortnights x share that go ahead,
+                         per session, a procedure and its operations (1-4 or "cont.")
+  2. operations               operations per fortnight x operating fortnights x share that go ahead,
                          then x utilisation ramp in year t. Above max_cases_per_robot x robots
                          is flagged amber (advisory), not cut
-  3. counterfactual      open_g = cases x p_open ; elsewhere_g = cases x p_robot_elsewhere ;
+  3. counterfactual      open_g = operations x p_open ; elsewhere_g = operations x p_robot_elsewhere ;
                          lap_g = the rest (what would happen WITHOUT the robot)
-  4. 30-day consequences events avoided = displaced cases x reduction x evidence x learning_t
+  4. 30-day consequences events avoided = displaced operations x reduction x evidence x learning_t
   5. extra cost          platform + instruments + sterile services + surgical first assistant
                          + extra theatre time + one-off implementation and theatre works
                          (the headline: no deduction for bed-days or other 30-day offsets)
   6. cost avoided        events avoided x unit costs (economic view only; not cash)
   7. net of cost avoided 5 - 6, by year (financial) and discounted (economic)
   8. break-even          volume at which 5 - 6 = 0 at steady state, searched only up to every
-                         available session booked at the rota's case mix
+                         available session booked at the rota's procedure mix
 
 The hospital type only selects the starting example rota; no calculation depends on it.
 No QALYs and no ICERs are computed, by design.
@@ -103,7 +103,7 @@ def validate(cfg):
     if cfg["robots"] < 1:
         raise ValueError("robots must be >= 1")
     if not 0 < pr.get("realisation_factor", 1.0) <= 1:
-        raise ValueError("the share of rota cases that go ahead must lie between 0 and 100%")
+        raise ValueError("the share of rota operations that go ahead must lie between 0 and 100%")
     for k, v in cfg["unit_costs"].items():
         if v < 0:
             raise ValueError(f"{D.UNIT_COST_LABELS.get(k, k)}: unit costs cannot be negative")
@@ -143,7 +143,7 @@ def fortnights_per_year(cfg):
 # 3-4. Counterfactual and 30-day patient consequences
 # ---------------------------------------------------------------------------
 def consequences(g, cases, multiplier):
-    """Events avoided for a given number of robotic cases. multiplier =
+    """Events avoided for a given number of robotic operations. multiplier =
     evidence setting x learning-curve factor for the year."""
     m = multiplier
     n_open = cases * g["p_open"]
@@ -301,8 +301,8 @@ def run(cfg):
     total = sum(cases_full.values())
     cap_cases = pr.get("max_cases_per_robot", 700) * cfg["robots"]
     if total > cap_cases + 1e-6:
-        warnings.append(f"Planned activity of {total:,.0f} cases a year is above "
-                        f"{pr.get('max_cases_per_robot', 700):,} cases per robot (advisory): check surgeon numbers, "
+        warnings.append(f"Planned activity of {total:,.0f} operations a year is above "
+                        f"{pr.get('max_cases_per_robot', 700):,} operations per robot (advisory): check surgeon numbers, "
                         "staffing and whether the lists are achievable.")
     if cfg["platform"].get("illustrative"):
         warnings.append(f"{cfg['platform']['label']}: the price is illustrative; enter the trust's quote.")
@@ -314,7 +314,7 @@ def run(cfg):
           if v["benefit_status"] == "not_yet_modelled" and v["planned_cases"] >= 0.5}
     if nm:
         warnings.append("30-day benefit not yet modelled for " + ", ".join(
-            f"{cfg['groups'][k]['label']} ({v:,.0f} cases a year)" for k, v in nm.items())
+            f"{cfg['groups'][k]['label']} ({v:,.0f} operations a year)" for k, v in nm.items())
             + ": their benefit is a zero placeholder pending evidence, not a finding that the robot has no benefit.")
 
     yearly = []
@@ -391,7 +391,7 @@ def run(cfg):
 # ---------------------------------------------------------------------------
 def steady_state_net(cfg, cases_by_group, scale):
     """Net annual cost at steady state (no one-off costs) when every group's
-    planned cases are multiplied by `scale` (case mix held constant)."""
+    planned operations are multiplied by `scale` (procedure mix held constant)."""
     pr, uc = cfg["programme"], cfg["unit_costs"]
     tot, _ = _sum_events(cfg, {k: v * scale for k, v in cases_by_group.items()}, cfg["evidence_multiplier"])
     c = year_costs(cfg, min(3, pr["horizon_years"]), tot, one_offs=False)
@@ -401,8 +401,8 @@ def steady_state_net(cfg, cases_by_group, scale):
 
 
 def max_deliverable_cases(cfg, base_cases, booked_sessions, capacity=None):
-    """The most cases a year the programme could deliver at this case mix: every
-    available session used at the planned cases per session. (The 700-per-robot
+    """The most operations a year the programme could deliver at this procedure mix: every
+    available session used at the planned operations per session. (The 700-per-robot
     figure is advisory from v0.6.1 and does not limit this.)"""
     capacity = capacity or 0
     if booked_sessions and booked_sessions > 0:
@@ -414,7 +414,7 @@ def break_even(cfg, cases_by_group, booked_sessions, capacity=None):
     base_net, base_cases = steady_state_net(cfg, cases_by_group, 1.0)
     if base_cases <= 0:
         return dict(status="no_cases", planned_cases=0, net_cost_at_plan=base_net, break_even_cases=None,
-                    max_cases=None, note="No robotic cases planned.")
+                    max_cases=None, note="No robotic operations planned.")
     max_cases = max_deliverable_cases(cfg, base_cases, booked_sessions, capacity)
     max_scale = max(max_cases / base_cases, 1.0)
     net_max, _ = steady_state_net(cfg, cases_by_group, max_scale)
@@ -426,12 +426,12 @@ def break_even(cfg, cases_by_group, booked_sessions, capacity=None):
                    note="At the planned volume, 30-day cost avoided already covers the extra cost.")
         return out
     if margin >= 0:
-        out.update(status="none", note=("No break-even volume: at this case mix each extra case adds more cost "
+        out.update(status="none", note=("No break-even volume: at this procedure mix each extra operation adds more cost "
                                          "than it avoids at 30 days."))
         return out
     if net_max > 0:
         out.update(status="beyond_capacity",
-                   note=(f"Not reachable within capacity: even at the maximum of about {max_cases:,.0f} cases a "
+                   note=(f"Not reachable within capacity: even at the maximum of about {max_cases:,.0f} operations a "
                          f"year, 30-day cost avoided would not cover the extra cost (shortfall "
                          f"£{net_max:,.0f} a year)."))
         return out
@@ -443,7 +443,7 @@ def break_even(cfg, cases_by_group, booked_sessions, capacity=None):
         else:
             hi = mid
     out.update(status="within_capacity", break_even_cases=hi * base_cases,
-               note=f"30-day cost avoided would cover the extra cost at about {hi * base_cases:,.0f} cases a year.")
+               note=f"30-day cost avoided would cover the extra cost at about {hi * base_cases:,.0f} operations a year.")
     return out
 
 
@@ -451,10 +451,10 @@ def break_even(cfg, cases_by_group, booked_sessions, capacity=None):
 # Price targets (reverse calculation) and spend guardrails
 # ---------------------------------------------------------------------------
 def price_targets(cfg, yearly, target_per_bed_day=None):
-    """Instrument price per case that would achieve (a) budget neutrality and
+    """Instrument price per operation that would achieve (a) budget neutrality and
     (b) a target net cost per bed-day released, at the planned steady-state
     volume (year 3). Net cost is linear in instrument price, so
-    price_needed = current_price - (net - target_net) / cases."""
+    price_needed = current_price - (net - target_net) / operations."""
     pf = cfg["platform"]
     charged = not pf.get("instruments_included", False) and pf["model"] != "per_procedure"
     y = yearly[min(3, len(yearly)) - 1]
@@ -485,7 +485,7 @@ def spend_guardrails(cfg, groups_out, util, yearly):
 
     per_robot = y["cases"] / cfg["robots"]
     capr = pr.get("max_cases_per_robot", 700)
-    add("Robotic cases per robot per year", f"{per_robot:,.0f}", "green" if per_robot <= capr else "amber",
+    add("Robotic operations per robot per year", f"{per_robot:,.0f}", "green" if per_robot <= capr else "amber",
         f"Advisory: above {capr:,} a year, check surgeon numbers, staffing and whether the lists are achievable.")
     nm = [g["label"].split(" (")[0] for g in groups_out.values()
           if g["benefit_status"] == "not_yet_modelled" and g["planned_cases"] >= 0.5]
@@ -497,7 +497,7 @@ def spend_guardrails(cfg, groups_out, util, yearly):
         "green" if util >= 0.85 else "amber" if util >= pr["low_utilisation_warning"] else "red",
         "Green 85% or more; red below 75%.")
     share_open = y["open_avoided"] / y["cases"] if y["cases"] else 0
-    add("Share of robotic cases displacing open surgery (advisory)", f"{share_open:.0%}",
+    add("Share of robotic operations displacing open surgery (advisory)", f"{share_open:.0%}",
         "green" if share_open >= 0.40 else "amber",
         "Advisory only. Green 40% or more, otherwise amber. Depends on the counterfactual entered by the trust.")
     s = cfg.get("instrument_price_setting", "list")

@@ -1,12 +1,12 @@
 """
-Benchmark profile: a well-functioning multi-port programme (about 550 cases per
-robot per year, mid-level costs, typical case mix), run through the same engine
+Benchmark profile: a well-functioning multi-port programme (about 550 operations per
+robot per year, mid-level costs, typical procedure mix), run through the same engine
 and shown side by side with the trust's proposal.
 
 Every benchmark value carries a source in defaults.BENCHMARK["sources"]; values
 with no published source are labelled as assumptions. The benchmark uses the same
 30-day clinical assumptions and unit costs as the trust's case, so differences
-reflect volume, case mix and price, not different clinical beliefs.
+reflect volume, procedure mix and price, not different clinical beliefs.
 """
 import copy
 
@@ -17,7 +17,7 @@ SPECIALTY_OF = {k: g["specialty"] for k, g in D.PROCEDURE_GROUPS.items()}
 
 
 def benchmark_cases(spec=None):
-    """Annual cases per procedure group for the benchmark programme."""
+    """Annual operations per procedure group for the benchmark programme."""
     b = spec or D.BENCHMARK
     total = b["cases_per_robot"] * b["robots"]
     shares = b["specialty_shares"]
@@ -62,7 +62,7 @@ def run_benchmark(trust_cfg=None, spec=None):
 
 
 def specialty_mix(result):
-    """Share of steady-state cases by specialty (year 3)."""
+    """Share of steady-state operations by specialty (year 3)."""
     y = result["yearly"][min(3, len(result["yearly"])) - 1]
     tot = y["cases"] or 1.0
     mix = {}
@@ -96,9 +96,9 @@ def comparison_rows(trust, bench):
 
     rows = [
         ("Robots", str(trust["config"]["robots"]), str(bench["config"]["robots"]), "Benchmark set at one robot."),
-        ("Robotic cases per robot per year (year 3)", f"{trust['cases_per_robot']:,.0f}",
+        ("Robotic operations per robot per year (year 3)", f"{trust['cases_per_robot']:,.0f}",
          f"{bench['cases_per_robot']:,.0f}", src["cases_per_robot"]),
-        ("Case mix: urology / general surgery / women's health / other", mix_str(tm), mix_str(bm),
+        ("Procedure mix: urology / general surgery / women's health / other", mix_str(tm), mix_str(bm),
          src["specialty_shares"] + " Split within specialties: " + src["within_specialty"][0].lower()
          + src["within_specialty"][1:]),
         ("Open operations avoided per robot per year", f"{per_robot(trust, 'open_avoided'):,.0f}",
@@ -107,7 +107,7 @@ def comparison_rows(trust, bench):
          f"{per_robot(bench, 'bed_days'):,.0f}", src["clinical"]),
         ("Extra cost per robot per year (year 3)", money(per_robot(trust, "extra_cost")),
          money(per_robot(bench, "extra_cost")), src["platform"]),
-        ("Extra cost per robotic case (five years)", money(trust["totals"]["cost_per_case"]),
+        ("Extra cost per robotic operation (five years)", money(trust["totals"]["cost_per_case"]),
          money(bench["totals"]["cost_per_case"]), "Calculated by the tool from the rows above."),
         ("Extra cost per open operation avoided", money(trust["totals"]["cost_per_open_operation_avoided"]),
          money(bench["totals"]["cost_per_open_operation_avoided"]), "Calculated by the tool."),

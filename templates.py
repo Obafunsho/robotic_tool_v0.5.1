@@ -5,11 +5,11 @@ Each robot has 14 days (Monday to Sunday, twice). For each day:
   sessions    "Sessions available": 0, 2 or 3 (session 3 only on 3-session days)
 and for each session (AM, PM, Eve = sessions 1, 2, 3):
   {s}_proc    procedure key, or "" for an unfilled session
-  {s}_cases   1, 2, 3 or 4, or "cont." for a case continuing from the previous session
-              with the same procedure (a case may span at most 3 sessions)
+  {s}_cases   1, 2, 3 or 4, or "cont." for an operation continuing from the previous session
+              with the same procedure (an operation may span at most 3 sessions)
 
 Utilisation = sessions booked / sessions available. A session is booked when it has a
-procedure. Cases come only from the rota; complexity is descriptive.
+procedure. Operations come only from the rota; complexity is descriptive.
 
 Grid format (engine and saved inputs): a list with one entry per robot; each entry is a
 list of 14 row dicts with keys week, day, sessions, AM_proc, AM_cases, PM_proc, PM_cases,
@@ -120,7 +120,7 @@ def summarise(cfg, grid=None):
                 elif not proc:
                     status = "open"
                     if c:
-                        issues.append(f"{where}: cases entered without a procedure; ignored.")
+                        issues.append(f"{where}: operations entered without a procedure; ignored.")
                     prev_proc, span = "", 0
                 elif proc not in G:
                     issues.append(f"{where}: '{proc}' is not a listed procedure; treated as unfilled.")
@@ -137,15 +137,15 @@ def summarise(cfg, grid=None):
                         else:
                             span += 1
                             if span > D.MAX_SESSIONS_PER_CASE:
-                                issues.append(f"{where}: a case can span at most {D.MAX_SESSIONS_PER_CASE} "
+                                issues.append(f"{where}: an operation can span at most {D.MAX_SESSIONS_PER_CASE} "
                                               "sessions.")
                     elif c in D.CASE_OPTIONS:
                         ncases = int(c)
                         cases[proc] += ncases
                         span = 1
                     else:
-                        issues.append(f"{where}: no cases entered for {G[proc]['label']}; counted as booked with "
-                                      "no cases.")
+                        issues.append(f"{where}: no operations entered for {G[proc]['label']}; counted as booked with "
+                                      "no operations.")
                         span = 1
                     prev_proc = proc
                 if status == "booked":
@@ -162,7 +162,7 @@ def summarise(cfg, grid=None):
 def ui_columns():
     cols = ["Week", "Day", "Sessions available"]
     for i, s in enumerate(D.SESSIONS, start=1):
-        cols += [f"{D.SESSION_LABELS[s]}: procedure", f"Session {i} cases"]
+        cols += [f"{D.SESSION_LABELS[s]}: procedure", f"Session {i} operations"]
     return cols
 
 
@@ -174,7 +174,7 @@ def to_ui_rows(cfg, robot_rows):
         for i, s in enumerate(D.SESSIONS, start=1):
             p = row.get(f"{s}_proc", "") or ""
             d[f"{D.SESSION_LABELS[s]}: procedure"] = lab.get(p, p) if p else D.UNFILLED
-            d[f"Session {i} cases"] = str(row.get(f"{s}_cases", "") or "") or BLANK_CASES
+            d[f"Session {i} operations"] = str(row.get(f"{s}_cases", "") or "") or BLANK_CASES
         out.append(d)
     return out
 
@@ -198,7 +198,7 @@ def from_ui_rows(cfg, records):
         for i, s in enumerate(D.SESSIONS, start=1):
             p = _clean(rec.get(f"{D.SESSION_LABELS[s]}: procedure"), D.UNFILLED)
             row[f"{s}_proc"] = rev.get(p, p)
-            row[f"{s}_cases"] = _clean(rec.get(f"Session {i} cases"), BLANK_CASES)
+            row[f"{s}_cases"] = _clean(rec.get(f"Session {i} operations"), BLANK_CASES)
         out.append(row)
     return out
 

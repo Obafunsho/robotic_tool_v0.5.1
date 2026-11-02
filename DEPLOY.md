@@ -15,7 +15,7 @@ This folder is a complete web application. The website, the calculations and the
 
 3. A browser opens at http://localhost:8501. Choose the configuration in the left panel, check the inputs, read the results, then open the "Business case" tab and press "Generate Word business case" to download the document.
 
-All 314 tests should pass before anything is put online. Package versions are pinned in `requirements.txt`; change them deliberately and re-run the tests.
+All 319 tests should pass before anything is put online. Package versions are pinned in `requirements.txt`; change them deliberately and re-run the tests.
 
 ## 2. Put it online
 
@@ -47,7 +47,7 @@ Give the container to the trust or ICS digital team. Because nothing is stored a
 ## 3. Data and security
 
 - No patient-identifiable data is used or requested.
-- Nothing entered is saved on the server. Users download an inputs file (.json) and can reload it from the sidebar to reproduce a case.
+- Nothing entered is saved on the server, and inputs are not saved or reloaded: each use is a one-off.
 - Supplier prices may be commercially confidential. Do not hard-code real quotes into `defaults.py` in a shared repository.
 
 ## 4. For the Python developer
@@ -60,7 +60,7 @@ Give the container to the trust or ICS digital team. Because nothing is stored a
 | `business_case.py` | Builds the Five Case Model content from engine results. |
 | `docx_render.py` | Renders that content to Word with python-docx. |
 | `benchmark.py`, `sensitivity.py`, `register.py` | Benchmark programme, tornado analysis, assumptions register. |
-| `charts.py`, `inputs_io.py` | Charts for Word; saving and reloading cases. |
+| `charts.py` | Charts for the Word business case. |
 | `templates.py` | The two-week robot rota (main input). |
 | `evidence_review.py` | Clinical lead's literature review applied as defaults. |
 | `register_xlsx.py` | Excel assumptions register: export and reload. |

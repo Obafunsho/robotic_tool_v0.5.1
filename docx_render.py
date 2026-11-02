@@ -123,7 +123,8 @@ def render(blocks):
     st = doc.styles
     st["Normal"].font.name = FONT
     st["Normal"].font.size = Pt(11)
-    for name, size, col in (("Heading 1", 16, NAVY), ("Heading 2", 13, NAVY), ("Heading 3", 11, None)):
+    for name, size, col in (("Heading 1", 16, NAVY), ("Heading 2", 13, NAVY), ("Heading 3", 11, None),
+                            ("Title", 24, NAVY), ("TOC Heading", 14, NAVY)):
         s = st[name]
         s.font.name = FONT
         s.font.size = Pt(size)
@@ -136,6 +137,11 @@ def render(blocks):
             rpr.append(rf)
         for a in ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia"):
             rf.set(qn(a), FONT)
+        # theme font attributes take precedence over explicit fonts in Word: remove them so
+        # headings render in Arial like the body text
+        for a in ("w:asciiTheme", "w:hAnsiTheme", "w:eastAsiaTheme", "w:cstheme"):
+            if rf.get(qn(a)) is not None:
+                del rf.attrib[qn(a)]
     hp = sec.header.paragraphs[0]
     hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     _runs(hp, HEADER_TEXT, size=8, color=DRAFT_RED)

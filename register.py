@@ -64,17 +64,17 @@ NEW_EVIDENCE = {   # (source, evidence grade) for procedures whose 30-day benefi
                 "Randomised trial (single centre)"),
 }
 
-EFFECTS = [("los_reduction_open", "Bed-days saved v open", "days per case"),
-           ("los_reduction_lap", "Bed-days saved v laparoscopic", "days per case"),
-           ("conv_reduction_lap", "Conversions avoided v laparoscopic", "proportion per case"),
-           ("comp_reduction_open", "Major complications avoided v open", "proportion per case"),
-           ("comp_reduction_lap", "Major complications avoided v laparoscopic", "proportion per case"),
-           ("reop_reduction_open", "Returns to theatre avoided v open", "proportion per case"),
-           ("reop_reduction_lap", "Returns to theatre avoided v laparoscopic", "proportion per case"),
-           ("readm_reduction_open", "Readmissions avoided v open", "proportion per case"),
-           ("readm_reduction_lap", "Readmissions avoided v laparoscopic", "proportion per case"),
-           ("extra_minutes_open", "Extra theatre minutes v open", "minutes per case"),
-           ("extra_minutes_lap", "Extra theatre minutes v laparoscopic", "minutes per case")]
+EFFECTS = [("los_reduction_open", "Bed-days saved v open", "days per operation"),
+           ("los_reduction_lap", "Bed-days saved v laparoscopic", "days per operation"),
+           ("conv_reduction_lap", "Conversions avoided v laparoscopic", "proportion per operation"),
+           ("comp_reduction_open", "Major complications avoided v open", "proportion per operation"),
+           ("comp_reduction_lap", "Major complications avoided v laparoscopic", "proportion per operation"),
+           ("reop_reduction_open", "Returns to theatre avoided v open", "proportion per operation"),
+           ("reop_reduction_lap", "Returns to theatre avoided v laparoscopic", "proportion per operation"),
+           ("readm_reduction_open", "Readmissions avoided v open", "proportion per operation"),
+           ("readm_reduction_lap", "Readmissions avoided v laparoscopic", "proportion per operation"),
+           ("extra_minutes_open", "Extra theatre minutes v open", "minutes per operation"),
+           ("extra_minutes_lap", "Extra theatre minutes v laparoscopic", "minutes per operation")]
 
 FLAGGED_CARRY = {
     "rectal": "Carried over from colorectal major resection; rectal-specific evidence not yet reviewed",
@@ -126,7 +126,7 @@ def _effect_source(k, g, field):
     if k in FLAGGED_CARRY:
         return FLAGGED_CARRY[k], "None", "Flagged for review"
     if k == "benign_gyn":
-        return "Averaged from the hysterectomy, myomectomy and endometriosis placeholders (weighted by v0.7 case volumes)", "None", \
+        return "Averaged from the hysterectomy, myomectomy and endometriosis placeholders (weighted by v0.7 operation volumes)", "None", \
             "Placeholder"
     return "Expert estimate (placeholder)", "None", "Placeholder"
 
@@ -151,7 +151,7 @@ def detail_rows(cfg):
         g = cfg["groups"][k]
         sp, lab = g["specialty"], g["label"]
         owner = f"[{sp} clinical benefit owner]"
-        add(f"{k}.complexity", sp, lab, "Complexity (descriptive only; cases come from the rota)", g["complexity"],
+        add(f"{k}.complexity", sp, lab, "Complexity (descriptive only; operations come from the rota)", g["complexity"],
             "High / Medium / Low", SRC["aneel"], "Clinical lead", "Clinical lead input", owner)
         src, grade, status = _reviewed(f"{k}.p_open", _p_open_source(k))
         add(f"{k}.p_open", sp, lab, "Share that would be open without the robot", float(g["p_open"]), "share",
@@ -159,8 +159,8 @@ def detail_rows(cfg):
         for field, name, unit in EFFECTS:
             src, grade, status = _reviewed(f"{k}.{field}", _effect_source(k, g, field))
             add(f"{k}.{field}", sp, lab, name, float(g[field]), unit, src, grade, status, owner)
-        add(f"{k}.tariff_uplift", sp, lab, f"{D.TARIFF_FIELD_LABEL} per robotic case (cash case only)",
-            float(g.get("tariff_uplift", 0.0)), "£ per case", D.TARIFF_SOURCES.get(k, D.DEFAULT_TARIFF_SOURCE),
+        add(f"{k}.tariff_uplift", sp, lab, f"{D.TARIFF_FIELD_LABEL} per robotic operation (cash case only)",
+            float(g.get("tariff_uplift", 0.0)), "£ per operation", D.TARIFF_SOURCES.get(k, D.DEFAULT_TARIFF_SOURCE),
             D.TARIFF_GRADES.get(k, "None"), "Clinical lead input" if k in D.TARIFF_SOURCES else "Placeholder",
             "[Finance lead]")
 
@@ -174,7 +174,7 @@ def detail_rows(cfg):
         add(f"unit_costs.{key}", "All", allp, D.UNIT_COST_LABELS[key], float(uc[key]), "£", "None found", "None",
             "Placeholder", fin)
     for key, name, unit, src, status in [
-            ("realisation_factor", "Share of rota cases that go ahead", "share",
+            ("realisation_factor", "Share of rota operations that go ahead", "share",
              "None found (cancellations and under-runs)", "Placeholder"),
             ("operating_weeks_per_year", "Operating weeks per year", "weeks", "None found", "Assumption"),
             ("implementation_cost_per_robot", "Implementation, training and proctoring per robot", "£",
@@ -183,7 +183,7 @@ def detail_rows(cfg):
             ("sfa_wte_per_robot", "Surgical first assistant: WTE per robot", "WTE", SRC["girft"], "Partly sourced"),
             ("sfa_cost_per_wte", "Surgical first assistant: cost per WTE", "£", "None found (placeholder)",
              "Placeholder"),
-            ("max_cases_per_robot", "Cases per robot per year: advisory level", "cases",
+            ("max_cases_per_robot", "Operations per robot per year: advisory level", "operations",
              "Project team decision (amber guardrail, not a cut)", "Assumption"),
             ("discount_rate", "Discount rate (economic case)", "share", SRC["green"], "Sourced"),
             ("pdc_rate", "Public dividend capital", "share", "DHSC policy rate", "Sourced")]:
@@ -229,14 +229,14 @@ def rows(cfg):
                                                       sorted(cnt)[0]), owner)
         if k in D.TARIFF_SOURCES:
             val = g.get("tariff_uplift", 0.0)
-            add(f"{g['label']}: {D.TARIFF_FIELD_LABEL.lower()} per case", f"£{val:,.0f}", D.TARIFF_SOURCES[k],
+            add(f"{g['label']}: {D.TARIFF_FIELD_LABEL.lower()} per operation", f"£{val:,.0f}", D.TARIFF_SOURCES[k],
                 D.TARIFF_GRADES.get(k, "None"),
                 "Clinical lead input" if val == D.TARIFF_DEFAULTS.get(k) else "Trust input", "[Finance lead]")
 
     pf, pr, uc = cfg["platform"], cfg["programme"], cfg["unit_costs"]
-    add("Two-week robot rota (sessions and cases)", "Example rota" if cfg.get("template_variant") == "example"
+    add("Two-week robot rota (sessions and operations)", "Example rota" if cfg.get("template_variant") == "example"
         else "Entered by the trust", "Trust theatre plan", "Local", "Trust input", "[Theatres lead]")
-    add("Share of rota cases that go ahead", f"{pr.get('realisation_factor', 1.0):.0%}",
+    add("Share of rota operations that go ahead", f"{pr.get('realisation_factor', 1.0):.0%}",
         "None found (cancellations and under-runs)", "None", "Placeholder", "[Theatres lead]")
     add(f"{D.TARIFF_FIELD_LABEL}, all other procedures", "£0", D.DEFAULT_TARIFF_SOURCE + " Not checked per HRG.",
         "None", "Placeholder", "[Finance lead]")
@@ -255,7 +255,7 @@ def rows(cfg):
     for key in ("reoperation", "major_complication", "readmission", "conversion"):
         add(D.UNIT_COST_LABELS[key], f"£{uc[key]:,.0f}", "None found", "None", "Placeholder", fin)
     add("Extra theatre minute", f"£{uc['theatre_minute']:,.0f}", "None found", "None", "Placeholder", fin)
-    add("Sterile services per robotic case", f"£{uc.get('decontamination_per_case', 0):,.0f}",
+    add("Sterile services per robotic operation", f"£{uc.get('decontamination_per_case', 0):,.0f}",
         "None found; sterilisation requirements are listed for consideration in system choice (GIRFT 2025)", "None", "Placeholder", fin)
 
     # Platform and commercial ------------------------------------------------------
@@ -263,8 +263,8 @@ def rows(cfg):
     add("Platform price basis", pf["label"], pf["source"],
         "Illustrative" if pf.get("illustrative") else "Published NHS anchor (to be re-confirmed)",
         "Placeholder" if pf.get("illustrative") else "Partly sourced", proc)
-    add("Instrument price per case", f"£{pf.get('instruments_per_case', 0):,.0f}",
-        "US single-centre average about $1,500 per case; single-port extra $1,170 to $1,820 (" + SRC["aua"] + ")",
+    add("Instrument price per operation", f"£{pf.get('instruments_per_case', 0):,.0f}",
+        "US single-centre average about $1,500 per operation; single-port extra $1,170 to $1,820 (" + SRC["aua"] + ")",
         "International", "Placeholder", proc)
     add("Instrument discounts (15% standard, 30% volume)", "15% and 30%", "None found", "None", "Placeholder", proc)
     if pf["model"] in ("managed_service", "per_procedure"):
@@ -286,9 +286,9 @@ def rows(cfg):
     add("Surgical first assistant or care practitioner", f"{pr.get('sfa_wte_per_robot', 0):g} WTE per robot at "
         f"£{pr.get('sfa_cost_per_wte', 0):,.0f}", SRC["girft"] + " (provision should be built into the business case); cost is a placeholder",
         "Guidance / none (cost)", "Partly sourced", "[Theatres lead]")
-    add("Robotic cases per robot per year: advisory level", f"{pr.get('max_cases_per_robot', 700):,}",
+    add("Robotic operations per robot per year: advisory level", f"{pr.get('max_cases_per_robot', 700):,}",
         "Project team decision (amber guardrail above this level, not a cut)", "n/a", "Assumption", "[Project team]")
-    add("Benchmark programme volume", f"{D.BENCHMARK['cases_per_robot']} cases per robot per year",
+    add("Benchmark programme volume", f"{D.BENCHMARK['cases_per_robot']} operations per robot per year",
         D.BENCHMARK["sources"]["cases_per_robot"], "Assumption with national context", "Assumption", "[Project team]")
     add("Discount rate (economic case)", f"{pr['discount_rate']:.1%}", SRC["green"], "Policy", "Sourced", fin)
     add("Public dividend capital", f"{pr['pdc_rate']:.1%}", "DHSC policy rate", "Policy", "Sourced", fin)

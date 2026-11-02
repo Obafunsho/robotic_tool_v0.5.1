@@ -9,7 +9,7 @@ cannot be edited by accident; the review columns are unlocked.
 
 Import: rows marked "change to" with a value become changes, keyed by ID; rows marked
 "needs evidence" and any comments are kept for the business case, and the Source and
-Evidence grade columns of changed rows are read so their citations reach Appendix D.
+Evidence grade columns of changed rows are read so their citations reach the business case (Appendix C).
 A "Change to" value without a Decision, a value of the wrong type, an unknown decision,
 or a row no longer used by the model is reported as an error, not ignored. Changes are
 applied by apply_changes() and appear as user-modified assumptions.
@@ -174,7 +174,7 @@ def load(data):
             comments[id_] = str(com)
         if id_ not in known:
             if dec or new not in (None, ""):
-                why = ("no longer used from v0.8 (cases come from the rota; demand and single-port removed)"
+                why = ("no longer used from v0.8 (operations come from the rota; demand and single-port removed)"
                        if id_.startswith("sp_") or id_.split(".")[-1] in REMOVED_FIELDS else "unknown ID")
                 errors.append(f"Row {n} ({id_}): {why}; not applied.")
             continue

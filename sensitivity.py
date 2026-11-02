@@ -79,30 +79,30 @@ def parameters(cfg, base_cases=None):
     if charged and pf.get("instruments_per_case", 0):
         lp = pf.get("instruments_list_price", pf["instruments_per_case"])
         if cfg.get("instrument_price_setting") == "custom":
-            add("Instrument price per case", "-20%", "+20%",
+            add("Instrument price per operation", "-20%", "+20%",
                 lambda c, l: c["platform"].__setitem__("instruments_per_case",
                                                        c["platform"]["instruments_per_case"] * (0.8 if l == "low" else 1.2)))
         else:
-            add("Instrument price per case", "30% off list", "list price",
+            add("Instrument price per operation", "30% off list", "list price",
                 lambda c, l, lp=lp: c["platform"].__setitem__("instruments_per_case", lp * (0.7 if l == "low" else 1.0)))
-    add("Sterile services per case", "half", "double",
+    add("Sterile services per operation", "half", "double",
         lambda c, l: c["unit_costs"].__setitem__("decontamination_per_case",
                                                  c["unit_costs"].get("decontamination_per_case", 0) * (0.5 if l == "low" else 2.0)))
     add("Surgical first assistant per robot", "0 WTE", "2 WTE",
         lambda c, l: c["programme"].__setitem__("sfa_wte_per_robot", 0.0 if l == "low" else 2.0))
-    add("Extra theatre minutes per case", "-50%", "+50%",
+    add("Extra theatre minutes per operation", "-50%", "+50%",
         lambda c, l: _scale_groups(c, ["extra_minutes_open", "extra_minutes_lap"], 0.5 if l == "low" else 1.5))
     add("Cost per theatre minute", "£8", "£20",
         lambda c, l: c["unit_costs"].__setitem__("theatre_minute", 8 if l == "low" else 20))
     if cfg.get("fixed_cases") is None:
-        add("Share of rota cases that go ahead", "85%", "100%",
+        add("Share of rota operations that go ahead", "85%", "100%",
             lambda c, l: c["programme"].__setitem__("realisation_factor", 0.85 if l == "low" else 1.0))
     add("Steady-state utilisation", "80%", "100%",
         lambda c, l: c["programme"].__setitem__(
             "utilisation_by_year",
             [u if i < 2 else (0.8 if l == "low" else 1.0) for i, u in enumerate(c["programme"]["utilisation_by_year"])]))
     add("Share open without the robot (all specialties)", "half", "1.5 times", lambda c, l: _p_open(c, 0.5 if l == "low" else 1.5))
-    add("Bed-days saved per case", "half", "1.5 times",
+    add("Bed-days saved per operation", "half", "1.5 times",
         lambda c, l: _scale_groups(c, ["los_reduction_open", "los_reduction_lap"], 0.5 if l == "low" else 1.5))
     add("Complications, returns to theatre, readmissions and conversions avoided", "half", "1.5 times",
         lambda c, l: _scale_groups(c, [k for k in D.BENEFIT_KEYS if not k.startswith("los")],
